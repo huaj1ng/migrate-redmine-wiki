@@ -1,0 +1,45 @@
+#!/usr/bin/env php
+<?php
+
+require __DIR__.'/../vendor/autoload.php';
+
+use HalloWelt\MediaWiki\Lib\Migration\CliApp;
+
+use HalloWelt\MigrateRedmineWiki\Command\ProbeCommand;
+use Symfony\Component\Console\Application;
+
+$application = new Application('Redmine Wiki Migration Tool', '0.1');
+$application->add(new ProbeCommand());
+$application->run();
+
+/*
+$config = [
+	'analyzers' => [
+		'HalloWelt\MigrateRedmineWiki\Analyzer\RedmineAnalyzer::factory'
+	],
+	'extractors' => [
+		'HalloWelt\MigrateRedmineWiki\Extractor\RedmineExtractor::factory'
+	],
+	'converters' => [
+		'HalloWelt\MigrateRedmineWiki\Converter\RedmineConverter::factory'
+	],
+	'composers' => [
+		'HalloWelt\MigrateRedmineWiki\Composer\RedmineComposer::factory'
+	],
+	'command-overrides' => [
+		'analyze' => [
+			'factory' => 'HalloWelt\MigrateRedmineWiki\Command\Analyze::factory'
+		],
+		'extract' => [
+			'factory' => 'HalloWelt\MigrateRedmineWiki\Command\Extract::factory'
+		],
+		'convert' => [
+			'factory' => 'HalloWelt\MigrateRedmineWiki\Command\Convert::factory'
+		]
+	]
+];
+
+$application = new CliApp( $config );
+*/
+
+$application->run();

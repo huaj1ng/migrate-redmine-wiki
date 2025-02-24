@@ -1,0 +1,67 @@
+{
+	"name": "hallowelt/migrate-redmine-wiki",
+	"type": "project",
+	"description": "Tool to convert Redmine Wiki Export XML into MediaWiki import XML",
+	"keywords": [
+		"wiki",
+		"MediaWiki",
+		"Redmine"
+	],
+	"license": "GPL-3.0-only",
+	"authors": [
+		{
+			"name": "Hua Jing",
+			"email": "hua.jing@hallowelt.com"
+		}
+	],
+	"repositories": [{
+		"type": "composer",
+		"url": "https://packages.bluespice.com/"
+	}],
+	"require": {
+		"psr/log": "~3",
+		"hallowelt/mediawiki-lib-mediawikixml": "dev-UpdateDependencies",
+		"hallowelt/mediawiki-lib-commandline-tools": "dev-UpdateDependencies",
+		"hallowelt/mediawiki-lib-migration": "dev-UpdateDependencies",
+		"hallowelt/mediawiki-lib-wikitext": "dev-UpdateDependencies",
+		"ext-dom": "*",
+		"symfony/yaml": "~6"
+	},
+	"require-dev": {
+		"mediawiki/mediawiki-codesniffer": "44.0.0",
+		"mediawiki/mediawiki-phan-config": "0.14.0",
+		"mediawiki/minus-x": "1.1.3",
+		"php-parallel-lint/php-console-highlighter": "1.0.0",
+		"php-parallel-lint/php-parallel-lint": "1.4.0",
+		"phpunit/phpunit": "^10"
+	},
+	"autoload": {
+		"psr-4": {
+			"HalloWelt\\MigrateEasyRedmineKnowledgebase\\": "src/",
+			"HalloWelt\\MigrateEasyRedmineKnowledgebase\\Tests\\": "tests/phpunit/"
+		}
+	},
+	"scripts": {
+		"unittest": [
+			"vendor/phpunit/phpunit/phpunit --configuration .phpunit.xml"
+		],
+		"test": [
+			"parallel-lint . --exclude vendor --exclude node_modules",
+			"minus-x check .",
+			"phpcs -sp"
+		],
+		"fix": [
+			"minus-x fix .",
+			"phpcbf"
+		],
+		"lint": [
+			"phan --no-progress-bar -m text | sed 's, ,:,'"
+		]
+	},
+	"config": {
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true,
+			"composer/installers": true
+		}
+	}
+}
