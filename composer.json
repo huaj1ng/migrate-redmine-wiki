@@ -37,8 +37,8 @@
 	},
 	"autoload": {
 		"psr-4": {
-			"HalloWelt\\MigrateEasyRedmineKnowledgebase\\": "src/",
-			"HalloWelt\\MigrateEasyRedmineKnowledgebase\\Tests\\": "tests/phpunit/"
+			"HalloWelt\\MigrateRedmineWiki\\": "src/",
+			"HalloWelt\\MigrateRedmineWiki\\Tests\\": "tests/phpunit/"
 		}
 	},
 	"scripts": {

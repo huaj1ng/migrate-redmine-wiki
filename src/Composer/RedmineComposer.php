@@ -2,4 +2,5 @@
 
 namespace HalloWelt\MigrateRedmineWiki\Composer;
 
-class RedmineComposer {}
+class RedmineComposer {
+}
