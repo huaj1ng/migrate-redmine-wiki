@@ -39,7 +39,8 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		$this->dataBuckets = new DataBuckets( [
 			'initial-data',
 			'test-map',
-			'wiki-page-map'
+			'wiki-pages',
+			'page-revisions',
 		] );
 	}
 
@@ -102,7 +103,9 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		}
 		$connection = new SqlConnection( $file );
 		$this->analyzePages( $connection );
-		// analyze revesions
+		$this->analyzeRevisions( $connection );
+		// add symphony console output
+		// add statistics
 		// add redirect targets
 		// analyze attachments
 
@@ -116,6 +119,8 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzePages( $connection ) {
+		// checking only the 0-th row
+		// potential entrance of additional data export
 		$wikiIDtoName = $this->dataBuckets
 			->getBucketData( 'initial-data' )['initial-data'][0];
 		$res = $connection->query(
@@ -166,7 +171,48 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		// redirect target should be processed together with revisions
 		// Page titles starting with "µ" are converted to capital "Μ" but not "M" in MediaWiki
 		// should add statistics for cli output
-		$this->dataBuckets->addData( 'wiki-page-map', 'wiki-page-map', $rows, true, false );
+		$this->dataBuckets->addData( 'wiki-pages', 'wiki-pages', $rows, true, false );
+	}
+
+	/**
+	 * ( ignored wiki_content_versions.compression )
+	 * @param SqlConnection $connection
+	 */
+	protected function analyzeRevisions( $connection ) {
+		// checking only the 0-th row
+		// potential entrance of additional data export
+		$wikiPages = $this->dataBuckets
+			->getBucketData( 'wiki-pages' )['wiki-pages'][0];
+		foreach ( array_keys( $wikiPages ) as $page_id ) {
+			$res = $connection->query(
+				"SELECT v.id AS rev_id, v.page_id, v.author_id, v.data, "
+				. "v.comments, v.updated_on, v.version "
+				. "FROM wiki_content_versions v "
+				// . "INNER JOIN users u ON c.author_id = u.id "
+				. "WHERE v.page_id = " . $page_id . " "
+				. "ORDER BY v.version;"
+			);
+			// ORDER BY v.version is ascending by default, which is important
+			$rows = [];
+			$last_ver = null;
+			while ( true ) {
+				$row = mysqli_fetch_assoc( $res );
+				if ( $row === null ) {
+					break;
+				}
+				$ver = $row['version'];
+				$rows[$ver] = $row;
+				unset( $rows[$ver]['version'] );
+				$rows[$ver]['parent_rev_id'] = ( $last_ver !== null ) ?
+					$rows[$last_ver]['rev_id']
+					: null;
+				$last_ver = $ver;
+				if ( count( $rows ) === 0 ) {
+					break;
+				}
+			}
+			$this->dataBuckets->addData( 'page-revisions', $page_id, $rows, true, false );
+		}
 	}
 
 	/**
