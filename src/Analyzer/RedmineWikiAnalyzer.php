@@ -90,47 +90,59 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
+	 * ( not using $connection->getTables() names )
+	 *
 	 * @param SplFileInfo $file
 	 * @return bool
-	 * @throws \Exception
 	 */
 	protected function doAnalyze( SplFileInfo $file ): bool {
 		if ( $file->getFilename() !== 'connection.json' ) {
 			return true;
 		}
 		$connection = new SqlConnection( $file );
-		// $tables = $connection->getTables();
-		// ignoring listed table names for now
+
+		$wikiIDtoName = $this->dataBuckets->getBucketData( 'initial-data' )['initial-data'][0];
+		$whereClause = "WHERE w.status = 1 AND w.id IN "
+			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); ";
+
 		$res = $connection->query(
-			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, c.id as content_id, c.version FROM wikis w "
-			. "inner join wiki_pages p on w.id = p.wiki_id "
-			. "inner join wiki_contents c on p.id = c.page_id "
-			. "where w.status = 1 and w.id in (10, 74, 57, 170); "
+			"SELECT wiki_id, p.id AS page_id, w.start_page FROM wikis w "
+			. "INNER JOIN wiki_pages p ON w.id = wiki_id AND w.start_page = p.title "
+			. $whereClause
 		);
-		if ( $res === null ) {
-			throw new \Exception( "\nFailed to run query!\n" );
+		$startPages = [];
+		while ( true ) {
+			$row = mysqli_fetch_assoc( $res );
+			if ( $row === null ) {
+				break;
+			}
+			$startPages[$row['page_id']] = $row['start_page'];
+			// need to parse all root pages named "Wiki"
+			// and more over, the root page names that might not be unique
+			// but not necessary for the small-batch test initial data
 		}
 
-		// echo "\nActual data:\n";
+		$res = $connection->query(
+			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, c.id AS content_id, c.version FROM wikis w "
+			. "INNER JOIN wiki_pages p ON w.id = p.wiki_id "
+			. "INNER JOIN wiki_contents c ON p.id = c.page_id "
+			. $whereClause
+		);
 		$rows = [];
 		while ( true ) {
 			$row = mysqli_fetch_assoc( $res );
 			if ( $row === null ) {
 				break;
 			}
-			$rows[] = $row;
+			// $row['wiki_name'] = $wikiIDtoName[$row['wiki_id']];
+			// use page id as index
+			$rows[$row['page_id']] = $row;
+			unset( $rows[$row['page_id']]['page_id'] );
 		}
-
+		// TODO: parse final page title
+		// redirect target only makes sense after having processed page titles.
 		$this->dataBuckets->addData( 'wiki-page-map', 'wiki-page-map', $rows, true, false );
-		// $this->dataBuckets->addData( 'test-map', 'test-map', $rows, true, false );
 
-		/*
-		foreach ( $connection->getTables() as $table ) {
-			if ( !$this->analyzeTable( $connection, $table ) ) {
-				return false;
-			}
-		}
-		*/
 		return true;
 	}
 
