@@ -7,6 +7,7 @@ use HalloWelt\MediaWiki\Lib\Migration\DataBuckets;
 use HalloWelt\MediaWiki\Lib\Migration\IAnalyzer;
 use HalloWelt\MediaWiki\Lib\Migration\IOutputAwareInterface;
 use HalloWelt\MediaWiki\Lib\Migration\SqlConnection;
+use HalloWelt\MediaWiki\Lib\Migration\TitleBuilder;
 use HalloWelt\MediaWiki\Lib\Migration\Workspace;
 use HalloWelt\MigrateRedmineWiki\ISourcePathAwareInterface;
 use SplFileInfo;
@@ -90,43 +91,40 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
-	 * ( not using $connection->getTables() names )
 	 *
 	 * @param SplFileInfo $file
 	 * @return bool
 	 */
 	protected function doAnalyze( SplFileInfo $file ): bool {
+		// should find connection.json under input path
 		if ( $file->getFilename() !== 'connection.json' ) {
 			return true;
 		}
 		$connection = new SqlConnection( $file );
+		$this->analyzePages( $connection );
+		// analyze revesions
+		// add redirect targets
+		// analyze attachments
 
-		$wikiIDtoName = $this->dataBuckets->getBucketData( 'initial-data' )['initial-data'][0];
-		$whereClause = "WHERE w.status = 1 AND w.id IN "
-			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); ";
+		return true;
+	}
 
+	/**
+	 * ( not using $connection->getTables() names )
+	 * ( not yet support database name prefix )
+	 *
+	 * @param SqlConnection $connection
+	 */
+	protected function analyzePages( $connection ) {
+		$wikiIDtoName = $this->dataBuckets
+			->getBucketData( 'initial-data' )['initial-data'][0];
 		$res = $connection->query(
-			"SELECT wiki_id, p.id AS page_id, w.start_page FROM wikis w "
-			. "INNER JOIN wiki_pages p ON w.id = wiki_id AND w.start_page = p.title "
-			. $whereClause
-		);
-		$startPages = [];
-		while ( true ) {
-			$row = mysqli_fetch_assoc( $res );
-			if ( $row === null ) {
-				break;
-			}
-			$startPages[$row['page_id']] = $row['start_page'];
-			// need to parse all root pages named "Wiki"
-			// and more over, the root page names that might not be unique
-			// but not necessary for the small-batch test initial data
-		}
-
-		$res = $connection->query(
-			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, c.id AS content_id, c.version FROM wikis w "
+			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, "
+			. "c.id AS content_id, c.version, protected FROM wikis w "
 			. "INNER JOIN wiki_pages p ON w.id = p.wiki_id "
 			. "INNER JOIN wiki_contents c ON p.id = c.page_id "
-			. $whereClause
+			. "WHERE w.status = 1 AND w.id IN "
+			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
 		$rows = [];
 		while ( true ) {
@@ -134,16 +132,41 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			if ( $row === null ) {
 				break;
 			}
-			// $row['wiki_name'] = $wikiIDtoName[$row['wiki_id']];
 			// use page id as index
 			$rows[$row['page_id']] = $row;
 			unset( $rows[$row['page_id']]['page_id'] );
 		}
-		// TODO: parse final page title
-		// redirect target only makes sense after having processed page titles.
-		$this->dataBuckets->addData( 'wiki-page-map', 'wiki-page-map', $rows, true, false );
 
-		return true;
+		foreach ( array_keys( $rows ) as $page_id ) {
+			$titleBuilder = new TitleBuilder( [] );
+			// assume that the migrated pages go to the default namespace
+			$builder = $titleBuilder->setNamespace( 0 );
+			$page = $page_id;
+			while ( true ) {
+				$row = $rows[$page];
+				if ( $row['parent_id'] === null ) {
+					if ( isset( $wikiIDtoName[$row['wiki_id']] ) ) {
+						// assuming that initial data provide unique names
+						$builder = $builder->appendTitleSegment(
+							$wikiIDtoName[$row['wiki_id']]
+						);
+					} else {
+						// workaround to make root titles unique
+						$rootTitle = $row['project_id'] . "_" . $row['title'];
+						$builder = $builder->appendTitleSegment( $rootTitle );
+					}
+					break;
+				}
+				$builder = $builder->appendTitleSegment( $row['title'] );
+				$page = $row['parent_id'];
+			}
+			$rows[$page_id]['formatted_title'] = $builder->invertTitleSegments()->build();
+		}
+		// redirect target only makes sense after having processed page titles.
+		// redirect target should be processed together with revisions
+		// Page titles starting with "µ" are converted to capital "Μ" but not "M" in MediaWiki
+		// should add statistics for cli output
+		$this->dataBuckets->addData( 'wiki-page-map', 'wiki-page-map', $rows, true, false );
 	}
 
 	/**
