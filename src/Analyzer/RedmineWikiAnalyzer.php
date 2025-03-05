@@ -105,8 +105,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		$connection = new SqlConnection( $file );
 		$this->analyzePages( $connection );
 		$this->analyzeRevisions( $connection );
-		$this->analyzeRedirectsWithPages( $connection );
-		$this->analyzeRedirectsWithoutPages( $connection );
+		$this->analyzeRedirects( $connection );
 		// add symphony console output
 		// add statistics
 		// analyze attachments, table and files
@@ -208,18 +207,19 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
-	 * Generate a revision for redirects that correspond to an existing page
+	 * Generate revisions / pages and revisions for redirects
 	 * @param SqlConnection $connection
 	 */
-	protected function analyzeRedirectsWithPages( $connection ) {
+	protected function analyzeRedirects( $connection ) {
 		$wikiIDtoName = $this->dataBuckets
 			->getBucketData( 'initial-data' )['initial-data'][0];
 		$wikiPages = $this->dataBuckets
 			->getBucketData( 'wiki-pages' )['wiki-pages'];
 		$pageRevisions = $this->dataBuckets
 			->getBucketData( 'page-revisions' );
-		// Handle when redirect source is an existing page
-		// In this case, we only append a new revision
+
+		// Generate a revision for redirects
+		// that correspond to an existing page
 		$res = $connection->query(
 			"SELECT p.id AS page_id, r.id AS redirect_id, "
 			. "r.created_on, redirects_to_wiki_id, redirects_to "
@@ -236,23 +236,80 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				break;
 			}
 			$id = $row['page_id'];
-			$maxRevision = max( array_keys( $pageRevisions[$id] ) );
-			$pageRevisions[$id][$maxRevision + 1] = [
+			$maxVersion = max( array_keys( $pageRevisions[$id] ) );
+			$pageRevisions[$id][$maxVersion + 1] = [
 				'rev_id' => self::INT_MAX - $i,
 				'page_id' => $id,
 				'author_id' => 1,
 				'comments' => 'Migration-generated revision from redirects table',
 				'updated_on' => $row['created_on'],
-				'parent_rev_id' => $maxRevision,
+				'parent_rev_id' => $pageRevisions[$id][$maxVersion]['rev_id'],
 			];
 			$i++;
-			$notes[] = [
+			$notes[$row['redirect_id']] = [
 				'page_id' => $id,
-				'generated_rev_id' => $maxRevision + 1,
+				'generated_rev_id' => $maxVersion + 1,
 				'redir_wiki_id' => $row['redirects_to_wiki_id'],
 				'redir_page_title' => $row['redirects_to'],
 			];
 		}
+
+		// Generate a page and a revision for redirects
+		// that do not correspond to an existing page
+		$additionalClause = count( $notes ) > 0
+			? "AND r.id NOT IN (" . implode( "', '", array_keys( $notes ) ) . ") "
+			: "";
+		$res = $connection->query(
+			"SELECT w.id AS wiki_id, w.project_id, r.id AS redirect_id, "
+			. "r.title AS page_title, r.created_on, "
+			. "redirects_to_wiki_id, redirects_to "
+			. "FROM wiki_redirects r INNER JOIN wikis w "
+			. "ON r.wiki_id = w.id "
+			. "WHERE r.wiki_id IN "
+			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . ") "
+			. $additionalClause
+			. "; "
+		);
+		while ( true ) {
+			$row = mysqli_fetch_assoc( $res );
+			if ( $row === null ) {
+				break;
+			}
+			$wikiID = $row['wiki_id'];
+			$titleBuilder = new TitleBuilder( [] );
+			$fTitle = $titleBuilder
+				->setNamespace( 0 )
+				->appendTitleSegment( $row['page_title'] )
+				->build();
+			$id = self::INT_MAX - $i;
+			$i++;
+			$wikiPages[$id] = [
+				'wiki_id' => $row['wiki_id'],
+				'project_id' => $row['project_id'],
+				'title' => $row['page_title'],
+				'parent_id' => null,
+				'content_id' => $id,
+				'version' => 1,
+				'protected' => 0,
+				'formatted_title' => $fTitle,
+			];
+			$pageRevisions[$id][1] = [
+				'rev_id' => $id,
+				'page_id' => $id,
+				'author_id' => 1,
+				'comments' => 'Migration-generated revision from redirects table',
+				'updated_on' => $row['created_on'],
+				'parent_rev_id' => null,
+			];
+			$notes[$row['redirect_id']] = [
+				'page_id' => $id,
+				'generated_rev_id' => $id,
+				'redir_wiki_id' => $row['redirects_to_wiki_id'],
+				'redir_page_title' => $row['redirects_to'],
+			];
+		}
+
+		// Insert redirect target info to pages and revisions involved
 		foreach ( $notes as $note ) {
 			$res = $connection->query(
 				"SELECT id AS redir_page_id FROM wiki_pages "
@@ -276,14 +333,6 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			}
 		}
 		$this->dataBuckets->addData( 'wiki-pages', 'wiki-pages', $wikiPages, false, true );
-	}
-
-	/**
-	 * Generate a page and a revision for pure redirects
-	 * that do not correspond to an existing page
-	 * @param SqlConnection $connection
-	 */
-	protected function analyzeRedirectsWithoutPages( $connection ) {
 	}
 
 	/**
