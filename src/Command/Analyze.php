@@ -9,8 +9,6 @@ use HalloWelt\MediaWiki\Lib\Migration\IOutputAwareInterface;
 use HalloWelt\MigrateRedmineWiki\Analyzer\RedmineWikiAnalyzer;
 use HalloWelt\MigrateRedmineWiki\ISourcePathAwareInterface;
 
-// use Symfony\Component\Console\Command\Command;
-
 class Analyze extends CliCommandBase {
 	protected function configure() {
 		$this->setName( 'analyze' )->setDescription( 'Test Redmine wiki migration scripts' );
