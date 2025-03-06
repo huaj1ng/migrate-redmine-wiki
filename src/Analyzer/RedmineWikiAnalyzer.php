@@ -42,6 +42,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			'initial-data',
 			'wiki-pages',
 			'page-revisions',
+			'attachment-files',
 		] );
 	}
 
@@ -98,19 +99,21 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @return bool
 	 */
 	protected function doAnalyze( SplFileInfo $file ): bool {
-		// should find connection.json under input path
 		if ( $file->getFilename() !== 'connection.json' ) {
 			return true;
 		}
+		$filepath = str_replace( $file->getFilename(), '', $file->getPathname() );
+		// not finished here
 		$connection = new SqlConnection( $file );
 		// not using $connection->getTables() names
-		// not yet support database name prefix
+		// not yet support datatable names with prefix
 		$this->analyzePages( $connection );
 		$this->analyzeRevisions( $connection );
 		$this->analyzeRedirects( $connection );
 		$this->analyzeAttachments( $connection );
+		$this->doStatistics( $connection );
+		// add user name data from renewed initial-data
 		// add symphony console output
-		// add statistics
 
 		return true;
 	}
@@ -159,12 +162,9 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				$page = $row['parent_id'];
 			}
 			$rows[$page_id]['formatted_title'] = $builder->invertTitleSegments()->build();
+			$this->dataBuckets->addData( 'wiki-pages', $page_id, $rows[$page_id], false, false );
 		}
-		// redirect target only makes sense after having processed page titles.
-		// redirect target should be processed together with revisions
 		// Page titles starting with "µ" are converted to capital "Μ" but not "M" in MediaWiki
-		// should add statistics for cli output
-		$this->dataBuckets->addData( 'wiki-pages', 'wiki-pages', $rows, false, false );
 	}
 
 	/**
@@ -173,8 +173,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRevisions( $connection ) {
-		$wikiPages = $this->dataBuckets
-			->getBucketData( 'wiki-pages' )['wiki-pages'];
+		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
 		foreach ( array_keys( $wikiPages ) as $page_id ) {
 			$res = $connection->query(
 				"SELECT v.id AS rev_id, v.page_id, v.author_id, v.data, "
@@ -215,8 +214,8 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	protected function analyzeRedirects( $connection ) {
 		$wikiIDtoName = $this->dataBuckets
 			->getBucketData( 'initial-data' )['wiki-id-name'][0];
-		$wikiPages = $this->dataBuckets
-			->getBucketData( 'wiki-pages' )['wiki-pages'];
+		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
+		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeRedirects\n" );
 		$pageRevisions = $this->dataBuckets
 			->getBucketData( 'page-revisions' );
 
@@ -330,11 +329,14 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				$generatedRevId = $note['generated_rev_id'];
 				$pageRevisions[$id][$generatedRevId]['data'] = "#REDIRECT [["
 					. $redirTitle . "]]";
-				$this->dataBuckets->addData( 'page-revisions', $id, $pageRevisions[$id], false, true );
+				$this->dataBuckets->addData( 'page-revisions', $id, $pageRevisions[$id], false, false );
 				$wikiPages[$id]['redirects_to'] = $redirTitle;
 			}
 		}
-		$this->dataBuckets->addData( 'wiki-pages', 'wiki-pages', $wikiPages, false, true );
+		foreach ( array_keys( $wikiPages ) as $id ) {
+			$this->dataBuckets->addData( 'wiki-pages', $id, $wikiPages[$id], false, false );
+		}
+		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows injected by analyzeRedirects\n" );
 	}
 
 	/**
@@ -346,31 +348,137 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	protected function analyzeAttachments( $connection ) {
 		$wikiIDtoName = $this->dataBuckets
 			->getBucketData( 'initial-data' )['wiki-id-name'][0];
-		$wikiPages = $this->dataBuckets
-			->getBucketData( 'wiki-pages' )['wiki-pages'];
-		$pageRevisions = $this->dataBuckets
-			->getBucketData( 'page-revisions' );
+		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
+		print_r( "\n[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeAttachments\n" );
+		$pageRevisions = $this->dataBuckets->getBucketData( 'page-revisions' );
+		$attachmentFiles = $this->dataBuckets->getBucketData( 'attachment-files' );
+		$rows = [];
 		$commonClause = "SELECT u.attachment_id, u.id AS revision_id, "
-			. "u.version, u.author_id, u.created_on, u.description, "
-			. "u.filename, u.disk_directory, u.disk_filename, "
+			. "u.version, u.author_id, u.created_on, u.updated_at, "
+			. "u.description, u.filename, u.disk_directory, u.disk_filename, "
 			. "u.content_type, u.filesize, u.digest, u.container_id "
 			. "FROM attachment_versions u "
 			. "INNER JOIN attachments a ON a.id = u.attachment_id ";
-		// handle attachments for wiki pages
 		$res = $connection->query(
 			$commonClause
-			. "INNER JOIN wiki_pages p ON u.container_id = p.id 
-			WHERE u.container_type = 'WikiPage' AND p.wiki_id IN "
+			. "INNER JOIN wiki_pages p ON u.container_id = p.id "
+			. "WHERE u.container_type = 'WikiPage' AND p.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
-		// handle attachments for wiki contents
+		while ( true ) {
+			$row = mysqli_fetch_assoc( $res );
+			if ( $row === null ) {
+				break;
+			}
+			$pathPrefix = $row['disk_directory']
+				? $row['disk_directory'] . DIRECTORY_SEPARATOR
+				: '';
+			$rows[$row['attachment_id']][$row['version']] = [
+				'created_on' => $row['created_on'],
+				'updated_at' => $row['updated_at'],
+				'summary' => $row['description'],
+				'user_id' => $row['author_id'],
+				'filename' => $row['filename'],
+				'source_path' => $pathPrefix . $row['disk_filename'],
+				'target_path' => $pathPrefix . $row['filename'],
+				'quoted_page_id' => $row['container_id'],
+			];
+		}
+		// when an attachment is no longer quoted in the current version
+		// of a wiki page, its container type will switch to 'WikiContent'
 		$res = $connection->query(
 			$commonClause
-			. "INNER JOIN wiki_contents c ON u.container_id = c.id 
-			INNER JOIN wiki_pages p ON c.page_id = p.id 
-			WHERE u.container_type = 'WikiContent' AND p.wiki_id IN "
+			. "INNER JOIN wiki_contents c ON u.container_id = c.id "
+			. "INNER JOIN wiki_pages p ON c.page_id = p.id "
+			. "WHERE u.container_type = 'WikiContent' AND p.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
+		while ( true ) {
+			$row = mysqli_fetch_assoc( $res );
+			if ( $row === null ) {
+				break;
+			}
+			$pathPrefix = $row['disk_directory']
+				? $row['disk_directory'] . DIRECTORY_SEPARATOR
+				: '';
+			$rows[$row['attachment_id']][$row['version']] = [
+				'created_on' => $row['created_on'],
+				'updated_at' => $row['updated_at'],
+				'summary' => $row['description'],
+				'user_id' => $row['author_id'],
+				'filename' => $row['filename'],
+				'source_path' => $pathPrefix . $row['disk_filename'],
+				'target_path' => $pathPrefix . $row['filename'],
+				'quoted_content_id' => $row['container_id'],
+			];
+		}
+		// generate a dummy page with a dummy revision for each attachment
+		// the only important thing is the title
+		$wikiPages = [];
+		foreach ( array_keys( $rows ) as $id ) {
+			// store attachment versions elsewhere to generate batch script
+			$this->dataBuckets->addData( 'attachment-files', $id, $rows[$id], false, false );
+
+			$maxVersion = max( array_keys( $rows[$id] ) );
+			$file = $rows[$id][$maxVersion];
+			$titleBuilder = new TitleBuilder( [] );
+			$fTitle = $titleBuilder
+				->setNamespace( 6 )
+				->appendTitleSegment( $file['filename'] )
+				->build();
+			$dummyId = 1000000000 + $id;
+			$wikiPages[$dummyId] = [
+				'wiki_id' => 0,
+				'project_id' => 0,
+				'title' => $file['filename'],
+				'parent_id' => null,
+				'content_id' => $dummyId,
+				'version' => 1,
+				'protected' => 0,
+				'formatted_title' => $fTitle,
+			];
+			$pageRevision = [
+				1 => [
+					'rev_id' => $dummyId,
+					'page_id' => $dummyId,
+					'author_id' => $file['user_id'],
+					'data' => '',
+					'comments' => 'Migration-generated revision of file page.',
+					'updated_on' => $file['updated_at'],
+					'parent_rev_id' => null,
+				],
+			];
+			$this->dataBuckets->addData( 'page-revisions', $dummyId, $pageRevision, false, false );
+		}
+		foreach ( array_keys( $wikiPages ) as $id ) {
+			$this->dataBuckets->addData( 'wiki-pages', $id, $wikiPages[$id], false, false );
+		}
+		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows injected by analyzeAttachments\n" );
+	}
+
+	/**
+	 * Analyze revisions of wiki pages
+	 *
+	 * @param SqlConnection $connection
+	 */
+	protected function doStatistics( $connection ) {
+		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
+		print_r( "\nstatistics: " . count( $wikiPages ) . " pages loaded\n" );
+
+		$pageRevisions = $this->dataBuckets->getBucketData( 'page-revisions' );
+		$revCount = 0;
+		foreach ( array_keys( $pageRevisions ) as $page_id ) {
+			$revCount += count( $pageRevisions[$page_id] );
+		}
+		print_r( "statistics: " . $revCount . " revisions loaded\n" );
+
+		$attachmentFiles = $this->dataBuckets->getBucketData( 'attachment-files' );
+		print_r( "statistics: " . count( $attachmentFiles ) . " attachments loaded\n" );
+		$fileCount = 0;
+		foreach ( array_keys( $attachmentFiles ) as $id ) {
+			$fileCount += count( $attachmentFiles[$id] );
+		}
+		print_r( "statistics: " . $fileCount . " attachment versions loaded\n" );
 	}
 
 	/**
