@@ -103,26 +103,26 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			return true;
 		}
 		$connection = new SqlConnection( $file );
+		// not using $connection->getTables() names
+		// not yet support database name prefix
 		$this->analyzePages( $connection );
 		$this->analyzeRevisions( $connection );
 		$this->analyzeRedirects( $connection );
+		$this->analyzeAttachments( $connection );
 		// add symphony console output
 		// add statistics
-		// analyze attachments, table and files
-		// move annotations here
 
 		return true;
 	}
 
 	/**
-	 * ( not using $connection->getTables() names )
-	 * ( not yet support database name prefix )
+	 * Analyze existing wiki pages
 	 *
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzePages( $connection ) {
 		$wikiIDtoName = $this->dataBuckets
-			->getBucketData( 'initial-data' )['initial-data'][0];
+			->getBucketData( 'initial-data' )['wiki-id-name'][0];
 		$res = $connection->query(
 			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, "
 			. "c.id AS content_id, c.version, protected FROM wikis w "
@@ -168,7 +168,8 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
-	 * ( ignored wiki_content_versions.compression )
+	 * Analyze revisions of wiki pages
+	 *
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRevisions( $connection ) {
@@ -208,11 +209,12 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 
 	/**
 	 * Generate revisions / pages and revisions for redirects
+	 *
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRedirects( $connection ) {
 		$wikiIDtoName = $this->dataBuckets
-			->getBucketData( 'initial-data' )['initial-data'][0];
+			->getBucketData( 'initial-data' )['wiki-id-name'][0];
 		$wikiPages = $this->dataBuckets
 			->getBucketData( 'wiki-pages' )['wiki-pages'];
 		$pageRevisions = $this->dataBuckets
@@ -333,6 +335,42 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			}
 		}
 		$this->dataBuckets->addData( 'wiki-pages', 'wiki-pages', $wikiPages, false, true );
+	}
+
+	/**
+	 * Analyze attachments, table and files
+	 *
+	 * Generate revisions / pages and revisions for redirects
+	 * @param SqlConnection $connection
+	 */
+	protected function analyzeAttachments( $connection ) {
+		$wikiIDtoName = $this->dataBuckets
+			->getBucketData( 'initial-data' )['wiki-id-name'][0];
+		$wikiPages = $this->dataBuckets
+			->getBucketData( 'wiki-pages' )['wiki-pages'];
+		$pageRevisions = $this->dataBuckets
+			->getBucketData( 'page-revisions' );
+		$commonClause = "SELECT u.attachment_id, u.id AS revision_id, "
+			. "u.version, u.author_id, u.created_on, u.description, "
+			. "u.filename, u.disk_directory, u.disk_filename, "
+			. "u.content_type, u.filesize, u.digest, u.container_id "
+			. "FROM attachment_versions u "
+			. "INNER JOIN attachments a ON a.id = u.attachment_id ";
+		// handle attachments for wiki pages
+		$res = $connection->query(
+			$commonClause
+			. "INNER JOIN wiki_pages p ON u.container_id = p.id 
+			WHERE u.container_type = 'WikiPage' AND p.wiki_id IN "
+			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
+		);
+		// handle attachments for wiki contents
+		$res = $connection->query(
+			$commonClause
+			. "INNER JOIN wiki_contents c ON u.container_id = c.id 
+			INNER JOIN wiki_pages p ON c.page_id = p.id 
+			WHERE u.container_type = 'WikiContent' AND p.wiki_id IN "
+			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
+		);
 	}
 
 	/**
