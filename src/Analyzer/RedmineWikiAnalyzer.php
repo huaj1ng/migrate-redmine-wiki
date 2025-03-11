@@ -135,16 +135,10 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
 		$rows = [];
-		while ( true ) {
-			$row = mysqli_fetch_assoc( $res );
-			if ( $row === null ) {
-				break;
-			}
-			// use page id as index
+		foreach ( $res as $row ) {
 			$rows[$row['page_id']] = $row;
 			unset( $rows[$row['page_id']]['page_id'] );
 		}
-
 		foreach ( array_keys( $rows ) as $page_id ) {
 			$titleBuilder = new TitleBuilder( [] );
 			// assume that the migrated pages go to the default namespace
@@ -186,11 +180,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			// ORDER BY v.version is ascending by default, which is important
 			$rows = [];
 			$last_ver = null;
-			while ( true ) {
-				$row = mysqli_fetch_assoc( $res );
-				if ( $row === null ) {
-					break;
-				}
+			foreach ( $res as $row ) {
 				$ver = $row['version'];
 				$rows[$ver] = $row;
 				unset( $rows[$ver]['version'] );
@@ -231,11 +221,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		);
 		$notes = [];
 		$i = 0;
-		while ( true ) {
-			$row = mysqli_fetch_assoc( $res );
-			if ( $row === null ) {
-				break;
-			}
+		foreach ( $res as $row ) {
 			$id = $row['page_id'];
 			$maxVersion = max( array_keys( $pageRevisions[$id] ) );
 			$pageRevisions[$id][$maxVersion + 1] = [
@@ -271,11 +257,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			. $additionalClause
 			. "; "
 		);
-		while ( true ) {
-			$row = mysqli_fetch_assoc( $res );
-			if ( $row === null ) {
-				break;
-			}
+		foreach ( $res as $row ) {
 			$wikiID = $row['wiki_id'];
 			$titleBuilder = new TitleBuilder( [] );
 			$fTitle = $titleBuilder
@@ -317,11 +299,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				. "WHERE wiki_id = " . $note['redir_wiki_id'] . " "
 				. "AND title = '" . $note['redir_page_title'] . "';"
 			);
-			while ( true ) {
-				$row = mysqli_fetch_assoc( $res );
-				if ( $row === null ) {
-					break;
-				}
+			foreach ( $res as $row ) {
 				$redirTitle = addslashes(
 					$wikiPages[$row['redir_page_id']]['formatted_title']
 				);
@@ -365,11 +343,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			. "WHERE u.container_type = 'WikiPage' AND p.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
-		while ( true ) {
-			$row = mysqli_fetch_assoc( $res );
-			if ( $row === null ) {
-				break;
-			}
+		foreach ( $res as $row ) {
 			$pathPrefix = $row['disk_directory']
 				? $row['disk_directory'] . DIRECTORY_SEPARATOR
 				: '';
@@ -393,11 +367,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			. "WHERE u.container_type = 'WikiContent' AND p.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
-		while ( true ) {
-			$row = mysqli_fetch_assoc( $res );
-			if ( $row === null ) {
-				break;
-			}
+		foreach ( $res as $row ) {
 			$pathPrefix = $row['disk_directory']
 				? $row['disk_directory'] . DIRECTORY_SEPARATOR
 				: '';
