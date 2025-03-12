@@ -28,6 +28,9 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	/** @var string */
 	private $src = '';
 
+	/** @var int */
+	private $maintenanceUserID = 1;
+
 	private const INT_MAX = 2147483647;
 
 	/**
@@ -188,9 +191,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 					$rows[$last_ver]['rev_id']
 					: null;
 				$last_ver = $ver;
-				if ( count( $rows ) === 0 ) {
-					break;
-				}
+				$rows[$ver]['author_name'] = $this->getUserName( $row['author_id'] );
 			}
 			$this->dataBuckets->addData( 'page-revisions', $page_id, $rows, false, false );
 		}
@@ -227,7 +228,8 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			$pageRevisions[$id][$maxVersion + 1] = [
 				'rev_id' => self::INT_MAX - $i,
 				'page_id' => $id,
-				'author_id' => 1,
+				'author_id' => $this->maintenanceUserID,
+				'author_name' => $this->getUserName( $this->maintenanceUserID ),
 				'comments' => 'Migration-generated revision from redirects table',
 				'updated_on' => $row['created_on'],
 				'parent_rev_id' => $pageRevisions[$id][$maxVersion]['rev_id'],
@@ -235,7 +237,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			$i++;
 			$notes[$row['redirect_id']] = [
 				'page_id' => $id,
-				'generated_rev_id' => $maxVersion + 1,
+				'generated_version_id' => $maxVersion + 1,
 				'redir_wiki_id' => $row['redirects_to_wiki_id'],
 				'redir_page_title' => $row['redirects_to'],
 			];
@@ -279,14 +281,15 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			$pageRevisions[$id][1] = [
 				'rev_id' => $id,
 				'page_id' => $id,
-				'author_id' => 1,
+				'author_id' => $this->maintenanceUserID,
+				'author_name' => $this->getUserName( $this->maintenanceUserID ),
 				'comments' => 'Migration-generated revision from redirects table',
 				'updated_on' => $row['created_on'],
 				'parent_rev_id' => null,
 			];
 			$notes[$row['redirect_id']] = [
 				'page_id' => $id,
-				'generated_rev_id' => $id,
+				'generated_version_id' => 1,
 				'redir_wiki_id' => $row['redirects_to_wiki_id'],
 				'redir_page_title' => $row['redirects_to'],
 			];
@@ -304,8 +307,8 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 					$wikiPages[$row['redir_page_id']]['formatted_title']
 				);
 				$id = $note['page_id'];
-				$generatedRevId = $note['generated_rev_id'];
-				$pageRevisions[$id][$generatedRevId]['data'] = "#REDIRECT [["
+				$generatedVerId = $note['generated_version_id'];
+				$pageRevisions[$id][$generatedVerId]['data'] = "#REDIRECT [["
 					. $redirTitle . "]]";
 				$this->dataBuckets->addData( 'page-revisions', $id, $pageRevisions[$id], false, false );
 				$wikiPages[$id]['redirects_to'] = $redirTitle;
@@ -411,6 +414,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				1 => [
 					'rev_id' => $dummyId,
 					'page_id' => $dummyId,
+					'author_name' => $this->getUserName( $file['user_id'] ),
 					'author_id' => $file['user_id'],
 					'data' => '',
 					'comments' => 'Migration-generated revision of file page.',
@@ -427,28 +431,52 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
+	 * Fetch user name by user ID from initial-data
+	 * can probably be improved by a database query
+	 * 
+	 * @param int $id
+	 * @return string
+	 */
+	protected function getUserName( $id ) {
+		$userIDtoName = $this->dataBuckets
+			->getBucketData( 'initial-data' )['user-id-name'][0];
+		if ( isset( $userIDtoName[$id] ) ) {
+			return $userIDtoName[$id];
+		}
+		return $id;
+	}
+
+	/**
 	 * Analyze revisions of wiki pages
 	 *
 	 * @param SqlConnection $connection
 	 */
 	protected function doStatistics( $connection ) {
+		print_r( "\nstatistics:\n" );
+
 		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
-		print_r( "\nstatistics: " . count( $wikiPages ) . " pages loaded\n" );
+		print_r( " - " . count( $wikiPages ) . " pages loaded\n" );
 
 		$pageRevisions = $this->dataBuckets->getBucketData( 'page-revisions' );
 		$revCount = 0;
 		foreach ( array_keys( $pageRevisions ) as $page_id ) {
 			$revCount += count( $pageRevisions[$page_id] );
+			foreach ( array_keys( $pageRevisions[$page_id] ) as $ver ) {
+				if ( !isset( $pageRevisions[$page_id][$ver]['author_name'] ) ) {
+					print_r( "author_name not set for page_id: " . $page_id . " ver: " . $ver . "\n" );
+					var_dump( $pageRevisions[$page_id][$ver] );
+				}
+			}
 		}
-		print_r( "statistics: " . $revCount . " revisions loaded\n" );
+		print_r( " - " . $revCount . " page revisions loaded\n" );
 
 		$attachmentFiles = $this->dataBuckets->getBucketData( 'attachment-files' );
-		print_r( "statistics: " . count( $attachmentFiles ) . " attachments loaded\n" );
+		print_r( " - " . count( $attachmentFiles ) . " attachments loaded\n" );
 		$fileCount = 0;
 		foreach ( array_keys( $attachmentFiles ) as $id ) {
 			$fileCount += count( $attachmentFiles[$id] );
 		}
-		print_r( "statistics: " . $fileCount . " attachment versions loaded\n" );
+		print_r( " - " . $fileCount . " attachment versions loaded\n" );
 	}
 
 	/**
