@@ -28,6 +28,12 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	/** @var string */
 	private $src = '';
 
+	/** @var array */
+	private $wikiNames = [];
+
+	/** @var array */
+	private $userNames = [];
+
 	/** @var int */
 	private $maintenanceUserID = 1;
 
@@ -42,7 +48,6 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	public function __construct( $config, Workspace $workspace, DataBuckets $buckets ) {
 		parent::__construct( $config, $workspace, $buckets );
 		$this->dataBuckets = new DataBuckets( [
-			'initial-data',
 			'wiki-pages',
 			'page-revisions',
 			'attachment-files',
@@ -83,6 +88,32 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
+	 * @param SqlConnection $connection
+	 * @return void
+	 */
+	protected function setNames( $connection ) {
+		$res = $connection->query(
+			"SELECT projects.id AS project_id, `name`, identifier, "
+			. "wikis.id AS wiki_id FROM projects INNER JOIN wikis "
+			. "ON projects.id = wikis.project_id;"
+		);
+		foreach ( $res as $row ) {
+			$this->wikiNames[$row['wiki_id']] = $row['name'];
+			// not fully used yet
+		}
+
+		$res = $connection->query(
+			"SELECT id, login, firstname, lastname FROM users;"
+		);
+		foreach ( $res as $row ) {
+			$fullName = trim( $row['firstname'] . ' ' . $row['lastname'] );
+			$this->userNames[$row['id']] = $row['login']
+				? $row['login']
+				: ( strlen( $fullName ) > 0 ? $fullName : 'User ' . $row['id'] );
+		}
+	}
+
+	/**
 	 * @param SplFileInfo $file
 	 * @return bool
 	 */
@@ -103,19 +134,20 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 */
 	protected function doAnalyze( SplFileInfo $file ): bool {
 		if ( $file->getFilename() !== 'connection.json' ) {
+			print_r( "Please use a connection.json!" );
 			return true;
 		}
 		$filepath = str_replace( $file->getFilename(), '', $file->getPathname() );
 		// not finished here
 		$connection = new SqlConnection( $file );
-		// not using $connection->getTables() names
-		// not yet support datatable names with prefix
+		// need to use abstract table name to support names with prefix
+		$this->setNames( $connection );
+		// wiki names not sufficiently used
 		$this->analyzePages( $connection );
 		$this->analyzeRevisions( $connection );
 		$this->analyzeRedirects( $connection );
 		$this->analyzeAttachments( $connection );
 		$this->doStatistics( $connection );
-		// add user name data from renewed initial-data
 		// add symphony console output
 
 		return true;
@@ -127,8 +159,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzePages( $connection ) {
-		$wikiIDtoName = $this->dataBuckets
-			->getBucketData( 'initial-data' )['wiki-id-name'][0];
+		$wikiIDtoName = $this->wikiNames;
 		$res = $connection->query(
 			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, "
 			. "c.id AS content_id, c.version, protected FROM wikis w "
@@ -203,8 +234,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRedirects( $connection ) {
-		$wikiIDtoName = $this->dataBuckets
-			->getBucketData( 'initial-data' )['wiki-id-name'][0];
+		$wikiIDtoName = $this->wikiNames;
 		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
 		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeRedirects\n" );
 		$pageRevisions = $this->dataBuckets
@@ -327,8 +357,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeAttachments( $connection ) {
-		$wikiIDtoName = $this->dataBuckets
-			->getBucketData( 'initial-data' )['wiki-id-name'][0];
+		$wikiIDtoName = $this->wikiNames;
 		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
 		print_r( "\n[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeAttachments\n" );
 		$pageRevisions = $this->dataBuckets->getBucketData( 'page-revisions' );
@@ -431,18 +460,14 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
-	 * Fetch user name by user ID from initial-data
-	 * can probably be improved by a database query
-	 * 
 	 * @param int $id
 	 * @return string
 	 */
 	protected function getUserName( $id ) {
-		$userIDtoName = $this->dataBuckets
-			->getBucketData( 'initial-data' )['user-id-name'][0];
-		if ( isset( $userIDtoName[$id] ) ) {
-			return $userIDtoName[$id];
+		if ( isset( $this->userNames[$id] ) ) {
+			return $this->userNames[$id];
 		}
+		print_r( "User ID " . $id . " not found in userNames\n" );
 		return $id;
 	}
 
