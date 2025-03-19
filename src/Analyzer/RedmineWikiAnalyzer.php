@@ -154,7 +154,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
-	 * Analyze existing wiki pages
+	 * Analyze existing wiki pages and generate info wiki-pages array
 	 *
 	 * @param SqlConnection $connection
 	 */
@@ -162,9 +162,11 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		$wikiIDtoName = $this->wikiNames;
 		$res = $connection->query(
 			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, "
+			. "pr.name AS project_name, pr.identifier AS project_identifier, "
 			. "c.id AS content_id, c.version, protected FROM wikis w "
 			. "INNER JOIN wiki_pages p ON w.id = p.wiki_id "
 			. "INNER JOIN wiki_contents c ON p.id = c.page_id "
+			. "INNER JOIN projects pr ON project_id = pr.id "
 			. "WHERE w.status = 1 AND w.id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
@@ -181,14 +183,14 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			while ( true ) {
 				$row = $rows[$page];
 				if ( $row['parent_id'] === null ) {
-					// not using $wikiIDtoName[$row['wiki_id']]
-					$rootTitle = $row['title'] . "_" . $row['project_id'];
-					$builder = $builder->appendTitleSegment( $rootTitle );
+					$builder = $builder->appendTitleSegment( $row['title'] )
+						->appendTitleSegment( $row['project_identifier'] );
 					break;
 				}
 				$builder = $builder->appendTitleSegment( $row['title'] );
 				$page = $row['parent_id'];
 			}
+			//naming convention: <project_identifier>/<root_page>/<sub_page>/..
 			$rows[$page_id]['formatted_title'] = $builder->invertTitleSegments()->build();
 			$this->dataBuckets->addData( 'wiki-pages', $page_id, $rows[$page_id], false, false );
 		}
@@ -281,9 +283,10 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		$res = $connection->query(
 			"SELECT w.id AS wiki_id, w.project_id, r.id AS redirect_id, "
 			. "r.title AS page_title, r.created_on, "
-			. "redirects_to_wiki_id, redirects_to "
-			. "FROM wiki_redirects r INNER JOIN wikis w "
-			. "ON r.wiki_id = w.id "
+			. "pr.name AS project_name, pr.identifier AS project_identifier, "
+			. "redirects_to_wiki_id, redirects_to FROM wiki_redirects r "
+			. "INNER JOIN wikis w ON r.wiki_id = w.id "
+			. "INNER JOIN projects pr ON w.project_id = pr.id "
 			. "WHERE r.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . ") "
 			. $additionalClause
@@ -292,8 +295,10 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		foreach ( $res as $row ) {
 			$wikiID = $row['wiki_id'];
 			$titleBuilder = new TitleBuilder( [] );
+			//naming convention: <project_identifier>/<root_page>
 			$fTitle = $titleBuilder
 				->setNamespace( 0 )
+				->appendTitleSegment( $row['project_identifier'] )
 				->appendTitleSegment( $row['page_title'] )
 				->build();
 			$id = self::INT_MAX - $i;
