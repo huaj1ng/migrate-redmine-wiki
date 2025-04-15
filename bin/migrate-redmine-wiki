@@ -4,15 +4,12 @@
 require __DIR__.'/../vendor/autoload.php';
 
 use HalloWelt\MediaWiki\Lib\Migration\CliApp;
-
 use Symfony\Component\Console\Application;
-
 
 $config = [
 	'analyzers' => [
 		'HalloWelt\MigrateRedmineWiki\Analyzer\RedmineWikiAnalyzer::factory'
 	],
-	/*
 	'extractors' => [
 		'HalloWelt\MigrateRedmineWiki\Extractor\RedmineExtractor::factory'
 	],
@@ -22,12 +19,7 @@ $config = [
 	'composers' => [
 		'HalloWelt\MigrateRedmineWiki\Composer\RedmineComposer::factory'
 	],
-	*/
 	'command-overrides' => [
-		'analyze' => [
-			'factory' => 'HalloWelt\MigrateRedmineWiki\Command\Analyze::factory'
-		],
-		/*
 		'analyze' => [
 			'factory' => 'HalloWelt\MigrateRedmineWiki\Command\Analyze::factory'
 		],
@@ -36,12 +28,12 @@ $config = [
 		],
 		'convert' => [
 			'factory' => 'HalloWelt\MigrateRedmineWiki\Command\Convert::factory'
-		]
-		*/
+		],
+		'compose' => [
+			'factory' => 'HalloWelt\MigrateRedmineWiki\Command\Compose::factory'
+		],
 	]
 ];
 
 $application = new CliApp( $config );
-
-
 $application->run();

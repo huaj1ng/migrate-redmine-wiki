@@ -8,25 +8,18 @@ use HalloWelt\MediaWiki\Lib\Migration\IAnalyzer;
 use HalloWelt\MediaWiki\Lib\Migration\IOutputAwareInterface;
 use HalloWelt\MediaWiki\Lib\Migration\SqlConnection;
 use HalloWelt\MediaWiki\Lib\Migration\TitleBuilder;
-use HalloWelt\MediaWiki\Lib\Migration\Workspace;
-use HalloWelt\MigrateRedmineWiki\ISourcePathAwareInterface;
 use SplFileInfo;
-use Symfony\Component\Console\Input\Input;
 use Symfony\Component\Console\Output\Output;
 
-class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInterface, ISourcePathAwareInterface {
-
-	/** @var DataBuckets */
-	private $dataBuckets = null;
-
-	/** @var Input */
-	private $input = null;
-
+class RedmineWikiAnalyzer extends SqlBase implements
+	IAnalyzer,
+	IOutputAwareInterface
+{
 	/** @var Output */
 	private $output = null;
 
-	/** @var string */
-	private $src = '';
+	/** @var DataBuckets */
+	private $customBuckets = null;
 
 	/** @var array */
 	private $wikiNames = [];
@@ -40,51 +33,17 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	private const INT_MAX = 2147483647;
 
 	/**
-	 *
-	 * @param array $config
-	 * @param Workspace $workspace
-	 * @param DataBuckets $buckets
-	 */
-	public function __construct( $config, Workspace $workspace, DataBuckets $buckets ) {
-		parent::__construct( $config, $workspace, $buckets );
-		$this->dataBuckets = new DataBuckets( [
-			'wiki-pages',
-			'page-revisions',
-			'attachment-files',
-		] );
-	}
-
-	/**
-	 *
-	 * @param array $config
-	 * @param Workspace $workspace
-	 * @param DataBuckets $buckets
-	 * @return RedmineWikiAnalyzer
-	 */
-	public static function factory( $config, Workspace $workspace, DataBuckets $buckets ): RedmineWikiAnalyzer {
-		return new static( $config, $workspace, $buckets );
-	}
-
-	/**
-	 * @param Input $input
-	 */
-	public function setInput( Input $input ) {
-		$this->input = $input;
-	}
-
-	/**
 	 * @param Output $output
 	 */
 	public function setOutput( Output $output ) {
 		$this->output = $output;
 	}
 
-	/**
-	 * @param string $path
-	 * @return void
-	 */
-	public function setSourcePath( $path ) {
-		$this->src = $path;
+	protected function setCustomBuckets() {
+		$this->customBuckets = new DataBuckets( [
+			'customizations',
+		] );
+		$this->customBuckets->loadFromWorkspace( $this->workspace );
 	}
 
 	/**
@@ -114,17 +73,15 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
-	 * @param SplFileInfo $file
-	 * @return bool
+	 * @param int $id
+	 * @return string
 	 */
-	public function analyze( SplFileInfo $file ): bool {
-		// $this->buckets->loadFromWorkspace( $this->workspace );
-		$this->dataBuckets->loadFromWorkspace( $this->workspace );
-		$result = parent::analyze( $file );
-
-		// $this->buckets->saveToWorkspace( $this->workspace );
-		$this->dataBuckets->saveToWorkspace( $this->workspace );
-		return $result;
+	protected function getUserName( $id ) {
+		if ( isset( $this->userNames[$id] ) ) {
+			return $this->userNames[$id];
+		}
+		print_r( "User ID " . $id . " not found in userNames\n" );
+		return $id;
 	}
 
 	/**
@@ -137,12 +94,11 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			print_r( "Please use a connection.json!" );
 			return true;
 		}
-		$filepath = str_replace( $file->getFilename(), '', $file->getPathname() );
-		// not finished here
+		$this->setCustomBuckets();
 		$connection = new SqlConnection( $file );
-		// need to use abstract table name to support names with prefix
 		$this->setNames( $connection );
 		// wiki names not sufficiently used
+		#$this->analyzeCategories( $connection );
 		$this->analyzePages( $connection );
 		$this->analyzeRevisions( $connection );
 		$this->analyzeRedirects( $connection );
@@ -159,6 +115,15 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzePages( $connection ) {
+		$customizations = $this->customBuckets->getBucketData( 'customizations' );
+		if ( !isset( $customizations['is-enabled'] ) || $customizations['is-enabled'] !== true ) {
+			print_r( "No customization enabled\n" );
+			$customizations = [];
+			$customizations['is-enabled'] = false;
+		} else {
+			print_r( "Customizations loaded\n" );
+		}
+
 		$wikiIDtoName = $this->wikiNames;
 		$res = $connection->query(
 			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, "
@@ -176,6 +141,8 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 			unset( $rows[$row['page_id']]['page_id'] );
 		}
 		foreach ( array_keys( $rows ) as $page_id ) {
+			$rows[$page_id]['categories'] = [];
+			// TODO: categories
 			$titleBuilder = new TitleBuilder( [] );
 			// assume that the migrated pages go to the default namespace
 			$builder = $titleBuilder->setNamespace( 0 );
@@ -190,9 +157,18 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				$builder = $builder->appendTitleSegment( $row['title'] );
 				$page = $row['parent_id'];
 			}
-			//naming convention: <project_identifier>/<root_page>/<sub_page>/..
+			// naming convention: <project_identifier>/<root_page>/<sub_page>/..
 			$rows[$page_id]['formatted_title'] = $builder->invertTitleSegments()->build();
-			$this->dataBuckets->addData( 'wiki-pages', $page_id, $rows[$page_id], false, false );
+
+			$fTitle = $rows[$page_id]['formatted_title'];
+			if ( $customizations['is-enabled'] && isset( $customizations['pages-to-modify'][$fTitle] ) ) {
+				if ( $customizations['pages-to-modify'][$fTitle] === false ) {
+					continue;
+				} else {
+					$rows[$page_id]['formatted_title'] = $customizations['pages-to-modify'][$fTitle];
+				}
+			}
+			$this->buckets->addData( 'wiki-pages', $page_id, $rows[$page_id], false, false );
 		}
 		// Page titles starting with "µ" are converted to capital "Μ" but not "M" in MediaWiki
 	}
@@ -203,13 +179,12 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRevisions( $connection ) {
-		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
+		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
 		foreach ( array_keys( $wikiPages ) as $page_id ) {
 			$res = $connection->query(
 				"SELECT v.id AS rev_id, v.page_id, v.author_id, v.data, "
 				. "v.comments, v.updated_on, v.version "
 				. "FROM wiki_content_versions v "
-				// . "INNER JOIN users u ON c.author_id = u.id "
 				. "WHERE v.page_id = " . $page_id . " "
 				. "ORDER BY v.version;"
 			);
@@ -226,7 +201,9 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				$last_ver = $ver;
 				$rows[$ver]['author_name'] = $this->getUserName( $row['author_id'] );
 			}
-			$this->dataBuckets->addData( 'page-revisions', $page_id, $rows, false, false );
+			if ( count( $rows ) !== 0 ) {
+				$this->buckets->addData( 'page-revisions', $page_id, $rows, false, false );
+			}
 		}
 	}
 
@@ -237,10 +214,9 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	 */
 	protected function analyzeRedirects( $connection ) {
 		$wikiIDtoName = $this->wikiNames;
-		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
+		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
 		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeRedirects\n" );
-		$pageRevisions = $this->dataBuckets
-			->getBucketData( 'page-revisions' );
+		$pageRevisions = $this->buckets->getBucketData( 'page-revisions' );
 
 		// Generate a revision for redirects
 		// that correspond to an existing page
@@ -295,7 +271,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		foreach ( $res as $row ) {
 			$wikiID = $row['wiki_id'];
 			$titleBuilder = new TitleBuilder( [] );
-			//naming convention: <project_identifier>/<root_page>
+			// naming convention: <project_identifier>/<root_page>
 			$fTitle = $titleBuilder
 				->setNamespace( 0 )
 				->appendTitleSegment( $row['project_identifier'] )
@@ -318,7 +294,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				'page_id' => $id,
 				'author_id' => $this->maintenanceUserID,
 				'author_name' => $this->getUserName( $this->maintenanceUserID ),
-				'comments' => 'Migration-generated revision from redirects table',
+				'comments' => 'Redmine-Wiki-Migration: generated revision from wiki_redirects table',
 				'updated_on' => $row['created_on'],
 				'parent_rev_id' => null,
 			];
@@ -345,12 +321,12 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				$generatedVerId = $note['generated_version_id'];
 				$pageRevisions[$id][$generatedVerId]['data'] = "#REDIRECT [["
 					. $redirTitle . "]]";
-				$this->dataBuckets->addData( 'page-revisions', $id, $pageRevisions[$id], false, false );
+				$this->buckets->addData( 'page-revisions', $id, $pageRevisions[$id], false, false );
 				$wikiPages[$id]['redirects_to'] = $redirTitle;
 			}
 		}
 		foreach ( array_keys( $wikiPages ) as $id ) {
-			$this->dataBuckets->addData( 'wiki-pages', $id, $wikiPages[$id], false, false );
+			$this->buckets->addData( 'wiki-pages', $id, $wikiPages[$id], false, false );
 		}
 		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows injected by analyzeRedirects\n" );
 	}
@@ -358,15 +334,39 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	/**
 	 * Analyze attachments, table and files
 	 *
-	 * Generate revisions / pages and revisions for redirects
+	 * Generate revisions / pages and revisions for attachments
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeAttachments( $connection ) {
+		$res = $connection->query(
+			"SELECT attachment_id, container_type, container_id, filename "
+			. "FROM attachment_versions WHERE filename IN ("
+				. "SELECT filename FROM attachment_versions "
+				. "WHERE container_type IS NOT NULL "
+				. "GROUP BY filename "
+				. "HAVING COUNT(*) >= 2 "
+			. ") AND container_type IS NOT NULL "
+			. "ORDER BY filename;"
+		);
+		$samenameAttachments = [];
+		foreach ( $res as $row ) {
+			$filename = $row['filename'];
+			unset( $row['filename'] );
+			$id = $row['attachment_id'];
+			unset( $row['attachment_id'] );
+			$samenameAttachments[$filename][$id] = $row;
+			$this->buckets->addData(
+				'samename-attachments',
+				$filename,
+				$samenameAttachments[$filename],
+				false,
+				false
+			);
+		}
+
 		$wikiIDtoName = $this->wikiNames;
-		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
-		print_r( "\n[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeAttachments\n" );
-		$pageRevisions = $this->dataBuckets->getBucketData( 'page-revisions' );
-		$attachmentFiles = $this->dataBuckets->getBucketData( 'attachment-files' );
+		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
+		$pageRevisions = $this->buckets->getBucketData( 'page-revisions' );
 		$rows = [];
 		$commonClause = "SELECT u.attachment_id, u.id AS revision_id, "
 			. "u.version, u.author_id, u.created_on, u.updated_at, "
@@ -391,7 +391,12 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				'user_id' => $row['author_id'],
 				'filename' => $row['filename'],
 				'source_path' => $pathPrefix . $row['disk_filename'],
-				'target_path' => $pathPrefix . $row['filename'],
+				'target_filename' => isset( $samenameAttachments[$row['filename']] )
+					? implode(
+						'_',
+						$samenameAttachments[$row['filename']][$row['attachment_id']]
+					) . '_' . $row['filename']
+					: $row['filename'],
 				'quoted_page_id' => $row['container_id'],
 			];
 		}
@@ -415,7 +420,12 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				'user_id' => $row['author_id'],
 				'filename' => $row['filename'],
 				'source_path' => $pathPrefix . $row['disk_filename'],
-				'target_path' => $pathPrefix . $row['filename'],
+				'target_filename' => isset( $samenameAttachments[$row['filename']] )
+					? implode(
+						'_',
+						$samenameAttachments[$row['filename']][$row['attachment_id']]
+					) . '_' . $row['filename']
+					: $row['filename'],
 				'quoted_content_id' => $row['container_id'],
 			];
 		}
@@ -424,7 +434,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		$wikiPages = [];
 		foreach ( array_keys( $rows ) as $id ) {
 			// store attachment versions elsewhere to generate batch script
-			$this->dataBuckets->addData( 'attachment-files', $id, $rows[$id], false, false );
+			$this->buckets->addData( 'attachment-files', $id, $rows[$id], false, false );
 
 			$maxVersion = max( array_keys( $rows[$id] ) );
 			$file = $rows[$id][$maxVersion];
@@ -433,7 +443,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 				->setNamespace( 6 )
 				->appendTitleSegment( $file['filename'] )
 				->build();
-			$dummyId = 1000000000 + $id;
+			$dummyId = $id + 1000000000;
 			$wikiPages[$dummyId] = [
 				'wiki_id' => 0,
 				'project_id' => 0,
@@ -451,43 +461,30 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 					'author_name' => $this->getUserName( $file['user_id'] ),
 					'author_id' => $file['user_id'],
 					'data' => '',
-					'comments' => 'Migration-generated revision of file page.',
+					'comments' => 'Redmine-Wiki-Migration: generated revision from attachment_versions table.',
 					'updated_on' => $file['updated_at'],
 					'parent_rev_id' => null,
 				],
 			];
-			$this->dataBuckets->addData( 'page-revisions', $dummyId, $pageRevision, false, false );
+			$this->buckets->addData( 'page-revisions', $dummyId, $pageRevision, false, false );
 		}
 		foreach ( array_keys( $wikiPages ) as $id ) {
-			$this->dataBuckets->addData( 'wiki-pages', $id, $wikiPages[$id], false, false );
+			$this->buckets->addData( 'wiki-pages', $id, $wikiPages[$id], false, false );
 		}
-		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows injected by analyzeAttachments\n" );
 	}
 
 	/**
-	 * @param int $id
-	 * @return string
-	 */
-	protected function getUserName( $id ) {
-		if ( isset( $this->userNames[$id] ) ) {
-			return $this->userNames[$id];
-		}
-		print_r( "User ID " . $id . " not found in userNames\n" );
-		return $id;
-	}
-
-	/**
-	 * Analyze revisions of wiki pages
+	 * Output statistics
 	 *
 	 * @param SqlConnection $connection
 	 */
 	protected function doStatistics( $connection ) {
 		print_r( "\nstatistics:\n" );
 
-		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
+		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
 		print_r( " - " . count( $wikiPages ) . " pages loaded\n" );
 
-		$pageRevisions = $this->dataBuckets->getBucketData( 'page-revisions' );
+		$pageRevisions = $this->buckets->getBucketData( 'page-revisions' );
 		$revCount = 0;
 		foreach ( array_keys( $pageRevisions ) as $page_id ) {
 			$revCount += count( $pageRevisions[$page_id] );
@@ -500,7 +497,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 		}
 		print_r( " - " . $revCount . " page revisions loaded\n" );
 
-		$attachmentFiles = $this->dataBuckets->getBucketData( 'attachment-files' );
+		$attachmentFiles = $this->buckets->getBucketData( 'attachment-files' );
 		print_r( " - " . count( $attachmentFiles ) . " attachments loaded\n" );
 		$fileCount = 0;
 		foreach ( array_keys( $attachmentFiles ) as $id ) {
@@ -510,9 +507,7 @@ class RedmineWikiAnalyzer extends SqlBase implements IAnalyzer, IOutputAwareInte
 	}
 
 	/**
-	 * @param array|null $row
-	 * @param string $table
-	 * @return bool
+	 * @inheritDoc
 	 */
 	protected function analyzeRow( $row, $table ) {
 		return true;
