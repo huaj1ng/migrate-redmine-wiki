@@ -2,6 +2,8 @@
 
 namespace HalloWelt\MigrateRedmineWiki\Converter;
 
+use HalloWelt\MediaWiki\Lib\Migration\DataBuckets;
+use HalloWelt\MediaWiki\Lib\Migration\Workspace;
 use HalloWelt\MigrateRedmineWiki\SimpleHandler;
 use HalloWelt\MigrateRedmineWiki\Utility\ConvertToolbox;
 use Symfony\Component\Console\Helper\ProgressBar;
@@ -13,16 +15,29 @@ class RedmineConverter extends SimpleHandler {
 	protected $dataBucketList = [
 		'wiki-pages',
 		'page-revisions',
+		'diagram-contents',
 	];
 
 	/** @var ConvertToolbox */
 	protected $toolbox = null;
 
+	/** @var int */
+	protected $currentPageId = 0;
+
+	/**
+	 * @param array $config
+	 * @param Workspace $workspace
+	 * @param DataBuckets $buckets
+	 */
+	public function __construct( $config, Workspace $workspace, DataBuckets $buckets ) {
+		parent::__construct( $config, $workspace, $buckets );
+		$this->toolbox = new ConvertToolbox( $this->workspace );
+	}
+
 	/**
 	 * @return bool
 	 */
 	public function convert(): bool {
-		$this->toolbox = new ConvertToolbox( $this->workspace );
 		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
 		$totalPages = count( $wikiPages );
 		$output = new ConsoleOutput();
@@ -34,14 +49,7 @@ class RedmineConverter extends SimpleHandler {
 		foreach ( $wikiPages as $id => $page ) {
 			$result = [];
 			foreach ( $pageRevisions[$id] as $version => $revision ) {
-				$content = $revision['data'];
-				$content = $this->preprocess( $content );
-				// $content = $this->processWithPandoc( $content, 'html', 'textile' );
-				// $content = $this->processWithPandoc( $content, 'textile', 'html' );
-				// $content = $this->processWithPandoc( $content, 'html', 'mediawiki' );
-				$content = $this->processWithPandoc( $content, 'textile', 'mediawiki' );
-				$content = $this->handlePreTags( $content );
-				$result[$version] = $content;
+				$result[$version] = $this->doConvert( $revision['data'] );
 			}
 			$this->buckets->addData( 'revision-wikitext', $id, $result, false, false );
 			$progressBar->advance();
@@ -55,8 +63,20 @@ class RedmineConverter extends SimpleHandler {
 	 * @param string $content
 	 * @return string
 	 */
+	public function doConvert( $content ) {
+		$content = $this->preprocess( $content );
+		$content = $this->processWithPandoc( $content, 'html', 'textile' );
+		$content = $this->processWithPandoc( $content, 'textile', 'mediawiki' );
+		$content = $this->handlePreTags( $content );
+		return $content;
+	}
+
+	/**
+	 * @param string $content
+	 * @return string
+	 */
 	public function preprocess( $content ) {
-		$content = preg_replace( '/<br \/>[^\n]/', "<br />\n", $content );
+		$content = preg_replace( '/<br \/>(?!\n)/', "<br />\n", $content );
 		$content = $this->toolbox->replaceCustomized( $content );
 		// $content = $this->toolbox->replaceInlineBeforePandoc( $content );
 		return $content;
@@ -122,8 +142,7 @@ class RedmineConverter extends SimpleHandler {
 		$exitCode = proc_close( $process );
 		if ( $exitCode !== 0 && $exitCode !== null ) {
 			$this->output->writeln(
-				"<error>Pandoc conversion failed with exit code $exitCode: $errors, "
-				. "conversion skipped</error>"
+				"<error>Conversion skipped: Pandoc failed with exit code $exitCode: $errors</error>"
 			);
 			return $content;
 		}
@@ -136,6 +155,7 @@ class RedmineConverter extends SimpleHandler {
 	 */
 	public function handlePreTags( $content ) {
 		$content = $this->toolbox->replaceEncodedEntities( $content );
+		$content = $this->toolbox->replaceCollapsedBlocks( $content );
 		$chunks = explode( "<pre>", $content );
 		$chunks[0] = $this->postprocess( $chunks[0] );
 		$content = $chunks[0];
@@ -161,13 +181,13 @@ class RedmineConverter extends SimpleHandler {
 	 */
 	public function postprocess( $content ) {
 		$content = $this->toolbox->replaceEncodedEntities( $content );
-		$content = $this->toolbox->replaceInlineTitles(
-			'attachment:”',
-			'”',
-			'[[',
-			']]',
-			$content
-		);
+		$content = $this->toolbox->replaceInlineTitles( 'attachment:"', '"', '[[', ']]', $content );
+		// should be replaced with better handling, resolving all #
+		// can start when links are well wrapped
+		$content = $this->toolbox->replaceInlineTitles( '\\#REDIREC', 'T', '#REDIREC', 'T', $content );
+		// $content = preg_replace( '/\\\\#/', '#', $content );
+		$content = $this->toolbox->replaceInlineElements( $content );
+		$content = $this->handleDiagrams( $content );
 		$content = $this->handleImages( $content );
 		$content = $this->handleAnchors( $content );
 		# $content = $this->handleEasyStoryLinks( $content );
@@ -215,6 +235,26 @@ class RedmineConverter extends SimpleHandler {
 			}
 		}
 		return $content;
+	}
+
+	/**
+	 * @param string $content
+	 * @return string
+	 */
+	public function handleDiagrams( $content ) {
+		return preg_replace_callback(
+			'/\{\{include_diagram\((\d+)--([^)]+)\)\}\}/i',
+			function ( $matches ) {
+				$diagrams = $this->dataBuckets->getBucketData( 'diagram-contents' );
+				$diagram = $diagrams[$matches[1]];
+				if ( !$diagram ) {
+					return $matches[0];
+				}
+				$filename = preg_replace( '/\.png$/i', '', $diagram['target_filename'] );
+				return "<drawio filename=\"$filename\" alt=\"$matches[2]\"></drawio>";
+			},
+			$content
+		);
 	}
 
 	/**

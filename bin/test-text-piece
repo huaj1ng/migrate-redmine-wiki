@@ -1,0 +1,46 @@
+#!/usr/bin/env php
+<?php
+require __DIR__.'/../vendor/autoload.php';
+
+use HalloWelt\MediaWiki\Lib\Migration\DataBuckets;
+use HalloWelt\MediaWiki\Lib\Migration\Workspace;
+use HalloWelt\MigrateRedmineWiki\Converter\RedmineConverter;
+
+$options = getopt('i:o:m:', ['input:', 'output:', 'method:']);
+
+$inputFile = $options['i'] ?? $options['input'] ?? null;
+$outputFile = $options['o'] ?? $options['output'] ?? null;
+$method = $options['m'] ?? $options['method'] ?? 'doConvert';
+
+if (!$inputFile || !file_exists($inputFile)) {
+    if (!$inputFile) {
+        echo "Error: Input file not specified.\n";
+    } else {
+        echo "Error: Input file '$inputFile' not found.\n";
+    }
+    echo "Usage: php validate-converter.php -i <input-file> [-o <output-file>] [-m <method>]\n";
+    echo "Methods: doConvert (default), preprocess, handlePreTags, postprocess, etc.\n";
+    exit(1);
+}
+
+$content = file_get_contents($inputFile);
+
+$workspace = new Workspace( new SplFileInfo( __DIR__ . '/../workspace' ) );
+$buckets = new DataBuckets( [] );
+$converter = new RedmineConverter( [], $workspace, $buckets );
+
+if (!method_exists($converter, $method)) {
+    echo "Error: Method '$method' does not exist in RedmineConverter class.\n";
+    echo "Available methods: doConvert, preprocess, handlePreTags, postprocess, handleHTMLTables, handleImages, handleAnchors\n";
+    exit(1);
+}
+
+$result = $converter->$method($content);
+if ($outputFile) {
+    file_put_contents($outputFile, $result);
+    echo "Conversion result saved to '$outputFile'.\n";
+} else {
+    echo "======= CONVERSION RESULT =======\n";
+    echo $result . "\n";
+    echo "================================\n";
+}

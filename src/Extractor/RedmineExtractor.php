@@ -11,6 +11,7 @@ class RedmineExtractor extends SimpleHandler implements IExtractor {
 	/** @var array */
 	protected $dataBucketList = [
 		'attachment-files',
+		'diagram-contents',
 	];
 
 	/**
@@ -31,6 +32,13 @@ class RedmineExtractor extends SimpleHandler implements IExtractor {
 					file_get_contents( $sourcePath )
 				);
 			}
+		}
+		$diagrams = $this->dataBuckets->getBucketData( 'diagram-contents' );
+		foreach ( $diagrams as $diagram ) {
+			$targetPath = $this->workspace->saveUploadFile(
+				$diagram['target_filename'],
+				base64_decode( $diagram['data_base64'] )
+			);
 		}
 		return true;
 	}

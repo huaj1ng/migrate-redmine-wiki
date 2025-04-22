@@ -27,6 +27,9 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	/** @var array */
 	private $userNames = [];
 
+	/** @var array */
+	private $diagramIds = [];
+
 	/** @var int */
 	private $maintenanceUserID = 1;
 
@@ -101,6 +104,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 		#$this->analyzeCategories( $connection );
 		$this->analyzePages( $connection );
 		$this->analyzeRevisions( $connection );
+		$this->analyzeDiagrams( $connection );
 		$this->analyzeRedirects( $connection );
 		$this->analyzeAttachments( $connection );
 		$this->doStatistics( $connection );
@@ -126,7 +130,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 
 		$wikiIDtoName = $this->wikiNames;
 		$res = $connection->query(
-			"SELECT p.wiki_id, project_id, c.page_id, title, parent_id, "
+			"SELECT p.wiki_id, project_id, c.page_id, title, p.parent_id, "
 			. "pr.name AS project_name, pr.identifier AS project_identifier, "
 			. "c.id AS content_id, c.version, protected FROM wikis w "
 			. "INNER JOIN wiki_pages p ON w.id = p.wiki_id "
@@ -141,8 +145,13 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			unset( $rows[$row['page_id']]['page_id'] );
 		}
 		foreach ( array_keys( $rows ) as $page_id ) {
+			if ( $customizations['is-enabled'] && isset( $customizations['unwanted-projects'] ) ) {
+				$unwantedProjects = explode( ', ', $customizations['unwanted-projects'] );
+				if ( in_array( $rows[$page_id]['project_id'], $unwantedProjects ) ) {
+					continue;
+				}
+			}
 			$rows[$page_id]['categories'] = [];
-			// TODO: categories
 			$titleBuilder = new TitleBuilder( [] );
 			// assume that the migrated pages go to the default namespace
 			$builder = $titleBuilder->setNamespace( 0 );
@@ -150,17 +159,26 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			while ( true ) {
 				$row = $rows[$page];
 				if ( $row['parent_id'] === null ) {
+					$rootPageTitle = $row['project_id'] == $row['project_identifier']
+						? $row['project_name']
+						: $row['project_identifier'];
 					$builder = $builder->appendTitleSegment( $row['title'] )
-						->appendTitleSegment( $row['project_identifier'] );
+						->appendTitleSegment( $rootPageTitle );
 					break;
 				}
 				$builder = $builder->appendTitleSegment( $row['title'] );
 				$page = $row['parent_id'];
 			}
-			// naming convention: <project_identifier>/<root_page>/<sub_page>/..
+			// naming convention: <root_page_title>/<root_page>/<sub_page>/..
 			$rows[$page_id]['formatted_title'] = $builder->invertTitleSegments()->build();
 
 			$fTitle = $rows[$page_id]['formatted_title'];
+			if ( $customizations['is-enabled'] && isset( $customizations['categories-to-add'][$fTitle] ) ) {
+				$rows[$page_id]['categories'] = array_unique( array_merge(
+					$rows[$page_id]['categories'],
+					$customizations['categories-to-add'][$fTitle]
+				) );
+			}
 			if ( $customizations['is-enabled'] && isset( $customizations['pages-to-modify'][$fTitle] ) ) {
 				if ( $customizations['pages-to-modify'][$fTitle] === false ) {
 					continue;
@@ -200,10 +218,61 @@ class RedmineWikiAnalyzer extends SqlBase implements
 					: null;
 				$last_ver = $ver;
 				$rows[$ver]['author_name'] = $this->getUserName( $row['author_id'] );
+				$this->scanData( $rows[$ver]['data'] );
+				if (
+					is_array( $wikiPages[$page_id]['categories'] )
+					&& count( $wikiPages[$page_id]['categories'] ) > 0
+				) {
+					$rows[$ver]['data'] .= "\n[[Category:"
+						. implode( "]]\n[[Category:", $wikiPages[$page_id]['categories'] )
+						. "]]";
+				}
 			}
 			if ( count( $rows ) !== 0 ) {
 				$this->buckets->addData( 'page-revisions', $page_id, $rows, false, false );
 			}
+		}
+	}
+
+	/**
+	 * Scan and ananlyze revision text data
+	 *
+	 * @param string $data
+	 * @return void
+	 */
+	protected function scanData( $data ) {
+		preg_match_all( '/{{include_diagram\((\d+).*?--/s', $data, $matches );
+		if ( !empty( $matches[1] ) ) {
+			$this->diagramIds = array_unique( array_merge(
+				$this->diagramIds, array_unique( $matches[1] )
+			) );
+		}
+	}
+
+	/**
+	 * Analyze current version of diagrams
+	 *
+	 * @param SqlConnection $connection
+	 */
+	protected function analyzeDiagrams( $connection ) {
+		$res = $connection->query(
+			"SELECT d.id , d.title, d.current_position, d.project_id, "
+			. "d.author_id, d.updated_at, d.html, d.xml_png FROM diagrams d "
+			. "where d.id IN (" . implode( ", ", $this->diagramIds ) . ");"
+		);
+		foreach ( $res as $row ) {
+			$id = $row['id'];
+			unset( $row['id'] );
+			$targetFilename = "Diagram" . $id . "--" . $row['title'] . '.png';
+			$row['target_filename'] = $targetFilename;
+			$titleBuilder = new TitleBuilder( [] );
+			$row['formatted_title'] = $titleBuilder
+				->setNamespace( 6 )
+				->appendTitleSegment( $targetFilename )
+				->build();
+			$row['data_base64'] = str_replace( 'data:image/png;base64,', '', $row['xml_png'] );
+			unset( $row['xml_png'] );
+			$this->buckets->addData( 'diagram-contents', $id, $row, false, false );
 		}
 	}
 
@@ -213,6 +282,15 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRedirects( $connection ) {
+		$customizations = $this->customBuckets->getBucketData( 'customizations' );
+		if ( !isset( $customizations['is-enabled'] ) || $customizations['is-enabled'] !== true ) {
+			print_r( "No customization enabled\n" );
+			$customizations = [];
+			$customizations['is-enabled'] = false;
+		} else {
+			print_r( "Customizations loaded\n" );
+		}
+
 		$wikiIDtoName = $this->wikiNames;
 		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
 		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeRedirects\n" );
@@ -222,15 +300,23 @@ class RedmineWikiAnalyzer extends SqlBase implements
 		// that correspond to an existing page
 		$res = $connection->query(
 			"SELECT p.id AS page_id, r.id AS redirect_id, "
-			. "r.created_on, redirects_to_wiki_id, redirects_to "
-			. "FROM wiki_redirects r INNER JOIN wiki_pages p "
+			. "r.created_on, redirects_to_wiki_id, redirects_to, "
+			. "w.project_id FROM wiki_redirects r "
+			. "INNER JOIN wiki_pages p "
 			. "ON r.wiki_id = p.wiki_id AND r.title = p.title "
+			. "INNER JOIN wikis w ON r.wiki_id = w.id "
 			. "WHERE r.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
 		$notes = [];
 		$i = 0;
 		foreach ( $res as $row ) {
+			if ( $customizations['is-enabled'] && isset( $customizations['unwanted-projects'] ) ) {
+				$unwantedProjects = explode( ', ', $customizations['unwanted-projects'] );
+				if ( in_array( $row['project_id'], $unwantedProjects ) ) {
+					continue;
+				}
+			}
 			$id = $row['page_id'];
 			$maxVersion = max( array_keys( $pageRevisions[$id] ) );
 			$pageRevisions[$id][$maxVersion + 1] = [
@@ -269,12 +355,21 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			. "; "
 		);
 		foreach ( $res as $row ) {
+			if ( $customizations['is-enabled'] && isset( $customizations['unwanted-projects'] ) ) {
+				$unwantedProjects = explode( ', ', $customizations['unwanted-projects'] );
+				if ( in_array( $row['project_id'], $unwantedProjects ) ) {
+					continue;
+				}
+			}
 			$wikiID = $row['wiki_id'];
 			$titleBuilder = new TitleBuilder( [] );
-			// naming convention: <project_identifier>/<root_page>
+			$rootPageTitle = $row['project_id'] == $row['project_identifier']
+				? $row['project_name']
+				: $row['project_identifier'];
+			// follow naming convention in analyzePages
 			$fTitle = $titleBuilder
 				->setNamespace( 0 )
-				->appendTitleSegment( $row['project_identifier'] )
+				->appendTitleSegment( $rootPageTitle )
 				->appendTitleSegment( $row['page_title'] )
 				->build();
 			$id = self::INT_MAX - $i;
@@ -288,6 +383,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				'version' => 1,
 				'protected' => 0,
 				'formatted_title' => $fTitle,
+				'categories' => [],
 			];
 			$pageRevisions[$id][1] = [
 				'rev_id' => $id,
@@ -314,6 +410,12 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				. "AND title = '" . $note['redir_page_title'] . "';"
 			);
 			foreach ( $res as $row ) {
+				if ( !isset( $wikiPages[$row['redir_page_id']] ) ) {
+					print_r( "Redirect target page not found: " . $note['redir_page_title'] . "\n" );
+					$id = $note['page_id'];
+					unset( $wikiPages[$id] );
+					continue;
+				}
 				$redirTitle = addslashes(
 					$wikiPages[$row['redir_page_id']]['formatted_title']
 				);
@@ -441,7 +543,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			$titleBuilder = new TitleBuilder( [] );
 			$fTitle = $titleBuilder
 				->setNamespace( 6 )
-				->appendTitleSegment( $file['filename'] )
+				->appendTitleSegment( $file['target_filename'] )
 				->build();
 			$dummyId = $id + 1000000000;
 			$wikiPages[$dummyId] = [
@@ -453,6 +555,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				'version' => 1,
 				'protected' => 0,
 				'formatted_title' => $fTitle,
+				'categories' => [],
 			];
 			$pageRevision = [
 				1 => [

@@ -26,6 +26,7 @@ class Analyze extends SimpleCommand {
 			'page-revisions',
 			'samename-attachments',
 			'attachment-files',
+			'diagram-contents',
 		];
 	}
 
@@ -33,7 +34,7 @@ class Analyze extends SimpleCommand {
 	 * @return int
 	 */
 	protected function process(): int {
-		$this->output->writeln( "Analyzing file '{$this->currentFile->getFilename()}'" );
+		$this->output->writeln( "Loading DB connection from '{$this->currentFile->getFilename()}'" );
 		$analyzerFactoryCallbacks = $this->config['analyzers'];
 		foreach ( $analyzerFactoryCallbacks as $key => $callback ) {
 			$analyzer = call_user_func_array(

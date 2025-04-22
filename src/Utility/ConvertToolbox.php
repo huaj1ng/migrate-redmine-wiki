@@ -350,6 +350,33 @@ class ConvertToolbox {
 	}
 
 	/**
+	 * @param string $content
+	 * @return string
+	 */
+	public function replaceCollapsedBlocks( $content ) {
+		// Pre-handle headings inside collapse blocks
+		$pattern = '/===\s*{{collapse\((.*?)\)\s*===/';
+		$replacement = '{{collapse(=== $1 ===)';
+		$content = preg_replace( $pattern, $replacement, $content );
+		// Handle collapse blocks with title
+		$pattern = '/{{collapse\((.*?)\)([\s\S]*?)(?<!\})\}\}(?!\})/s';
+		$replacement = '<div class="toccolours mw-collapsible mw-collapsed">'
+			. "\n$1\n"
+			. '<div class="mw-collapsible-content">'
+			. "\n$2\n"
+			. '</div></div>';
+		$content = preg_replace( $pattern, $replacement, $content );
+		// Handle collapse blocks without title
+		$pattern = '/{{collapse([\s\S]*?)(?<!\})\}\}(?!\})/s';
+		$replacement = '<div class="toccolours mw-collapsible mw-collapsed">'
+			. '<div class="mw-collapsible-content">'
+			. "\n$1\n"
+			. '</div></div>';
+		$content = preg_replace( $pattern, $replacement, $content );
+		return $content;
+	}
+
+	/**
 	 * @param string $oldStart
 	 * @param string $oldEnd
 	 * @param string $newStart
@@ -381,6 +408,30 @@ class ConvertToolbox {
 	}
 
 	/**
+	 * @param string $content
+	 * @return string
+	 */
+	public function replaceInlineElements( $content ) {
+		$lines = explode( "\n", $content );
+		foreach ( $lines as $index => $line ) {
+			// handle redundant <span> tags
+			if ( preg_match( '/<span\s+id="[^"]*"><\/span>/', $line, $matches ) ) {
+				unset( $lines[$index] );
+			}
+			// handle h1 titles
+			if ( preg_match( '/^=([^=]+)=$/', $line, $matches ) ) {
+				$lines[$index] = "= " . trim( $matches[1] ) . " =\n__HIDETITLE__";
+			}
+			// handle toc
+			if ( preg_match( '/{{\s*(?:toc|>toc)\s*}}/', $line ) ) {
+				$lines[$index] = str_replace( '{{toc}}', '__TOC__', $line );
+				$lines[$index] = str_replace( '{{>toc}}', '__TOC__', $lines[$index] );
+			}
+		}
+		return implode( "\n", $lines );
+	}
+
+	/**
 	 * @param string $title
 	 * @return string
 	 */
@@ -404,7 +455,7 @@ class ConvertToolbox {
 		if ( isset( $this->customizations['title-cheatsheet'][$title] ) ) {
 			return $this->customizations['title-cheatsheet'][$title];
 		}
-		$this->dataBuckets->addData( 'missing-titles', $title, true, true );
+		$this->dataBuckets->addData( 'missing-titles', $title, true, false );
 		return $title;
 	}
 
@@ -425,7 +476,7 @@ class ConvertToolbox {
 	 * @return string|false
 	 */
 	public function getAttachmentTitleFromLink( $link ) {
-		$domain = $this->toolbox->getDomain();
+		$domain = $this->getDomain();
 		if ( !$domain ) {
 			return false;
 		}
@@ -434,7 +485,7 @@ class ConvertToolbox {
 		if ( preg_match( $pattern, $link, $matches ) ) {
 			$id = (int)$matches[1];
 			$title = $this->getFormattedTitleFromId( $id + 1000000000 ) ?? "Attachment-$id";
-			$this->dataBuckets->addData( 'missing-attachments', $link, true, true );
+			$this->dataBuckets->addData( 'missing-attachments', $link, true, false );
 			return $title;
 		}
 		return false;
