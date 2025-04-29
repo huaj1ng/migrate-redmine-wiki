@@ -237,8 +237,7 @@ class ConvertToolbox {
 		if ( !isset( $customizations['redmine-domain'] ) ) {
 			return false;
 		}
-		$domain = rtrim( $customizations['redmine-domain'], '/' );
-		$domain = preg_quote( $domain, '/' );
+		$domain = $customizations['redmine-domain'];
 		return $domain;
 	}
 
@@ -266,6 +265,24 @@ class ConvertToolbox {
 			$line = preg_replace( '/\":<\//', '":' . "\n" . '</', $line );
 		}
 		return implode( "\n", $lines );
+	}
+
+	/**
+	 * A workaround resolving problematic usage of first headings
+	 *
+	 * @param string $content
+	 * @return string
+	 */
+	public function replaceFirstLinesAfterPandoc( $content ) {
+		$lines = explode( "\n", $content, 3 );
+		if ( preg_match( '/^=+\s+.+\s+=+$/', $lines[0] ) ) {
+			$lines[0] = '<!--' . $lines[0] . '-->';
+			$content = implode( "\n", $lines );
+		} elseif ( !empty( $lines[1] ) && preg_match( '/^=+\s+.+\s+=+$/', $lines[1] ) ) {
+			$lines[1] = '<!--' . $lines[1] . '-->';
+			$content = implode( "\n", $lines );
+		}
+		return $content;
 	}
 
 	/**
@@ -418,10 +435,6 @@ class ConvertToolbox {
 			if ( preg_match( '/<span\s+id="[^"]*"><\/span>/', $line, $matches ) ) {
 				unset( $lines[$index] );
 			}
-			// handle h1 titles
-			if ( preg_match( '/^=([^=]+)=$/', $line, $matches ) ) {
-				$lines[$index] = "= " . trim( $matches[1] ) . " =\n__HIDETITLE__";
-			}
 			// handle toc
 			if ( preg_match( '/{{\s*(?:toc|>toc)\s*}}/', $line ) ) {
 				$lines[$index] = str_replace( '{{toc}}', '__TOC__', $line );
@@ -480,13 +493,38 @@ class ConvertToolbox {
 		if ( !$domain ) {
 			return false;
 		}
-		$pattern = '/https?:\/\/' . $domain . '\/attachments\/(?:download|thumbnail)\/';
+		$pattern = '/https?:\/\/' . preg_quote( $domain, '/' ) . '\/attachments\/';
+		$pattern .= '(?:(?:download|thumbnail)\/)?';
 		$pattern .= '(\d+)(?:\/[^?#\s]*)?(?:\?[^#\s]*)?(?:#[^\s]*)?/';
 		if ( preg_match( $pattern, $link, $matches ) ) {
 			$id = (int)$matches[1];
 			$title = $this->getFormattedTitleFromId( $id + 1000000000 ) ?? "Attachment-$id";
 			$this->dataBuckets->addData( 'missing-attachments', $link, true, false );
 			return $title;
+		}
+		return false;
+	}
+
+	/**
+	 * @param string $pageTitle
+	 * @param string $targetTitle
+	 * @return bool
+	 */
+	public function isSameTitle( $pageTitle, $targetTitle ) {
+		if ( $pageTitle === $targetTitle ) {
+			return true;
+		}
+		$pageTitle = str_replace( ' ', '_', $pageTitle );
+		$pageTitle = str_replace( '.', '', $pageTitle );
+		$targetTitle = str_replace( '.', '', $targetTitle );
+		$targetTitle = str_replace( ',', '', $targetTitle );
+		$targetTitle = str_replace( '/', '', $targetTitle );
+		$targetTitle = str_replace( '?', '', $targetTitle );
+		$targetTitle = str_replace( '¶', '', $targetTitle );
+		$targetTitle = str_replace( '’', '\'', $targetTitle );
+		$targetTitle = str_replace( '‘', '\'', $targetTitle );
+		if ( strtolower( $pageTitle ) == strtolower( $targetTitle ) ) {
+			return true;
 		}
 		return false;
 	}

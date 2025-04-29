@@ -6,11 +6,13 @@ use HalloWelt\MediaWiki\Lib\Migration\DataBuckets;
 use HalloWelt\MediaWiki\Lib\Migration\Workspace;
 use HalloWelt\MigrateRedmineWiki\Converter\RedmineConverter;
 
-$options = getopt('i:o:m:', ['input:', 'output:', 'method:']);
+$options = getopt('i:o:m:p:v:', ['input:', 'output:', 'method:', 'page:', 'version:']);
 
 $inputFile = $options['i'] ?? $options['input'] ?? null;
 $outputFile = $options['o'] ?? $options['output'] ?? null;
 $method = $options['m'] ?? $options['method'] ?? 'doConvert';
+$pageId = $options['p'] ?? $options['page'] ?? null;
+$version = $options['v'] ?? $options['version'] ?? 1;
 
 if (!$inputFile || !file_exists($inputFile)) {
     if (!$inputFile) {
@@ -35,6 +37,9 @@ if (!method_exists($converter, $method)) {
     exit(1);
 }
 
+if ( $pageId ) {
+    $result = $converter->setCurrentPage( $pageId, $version );
+}
 $result = $converter->$method($content);
 if ($outputFile) {
     file_put_contents($outputFile, $result);

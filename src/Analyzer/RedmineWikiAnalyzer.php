@@ -8,6 +8,7 @@ use HalloWelt\MediaWiki\Lib\Migration\IAnalyzer;
 use HalloWelt\MediaWiki\Lib\Migration\IOutputAwareInterface;
 use HalloWelt\MediaWiki\Lib\Migration\SqlConnection;
 use HalloWelt\MediaWiki\Lib\Migration\TitleBuilder;
+use HalloWelt\MediaWiki\Lib\Migration\Workspace;
 use SplFileInfo;
 use Symfony\Component\Console\Output\Output;
 
@@ -20,6 +21,9 @@ class RedmineWikiAnalyzer extends SqlBase implements
 
 	/** @var DataBuckets */
 	private $customBuckets = null;
+
+	/** @var array */
+	private $customizations = [];
 
 	/** @var array */
 	private $wikiNames = [];
@@ -36,17 +40,35 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	private const INT_MAX = 2147483647;
 
 	/**
-	 * @param Output $output
+	 *
+	 * @param array $config
+	 * @param Workspace $workspace
+	 * @param DataBuckets $buckets
 	 */
-	public function setOutput( Output $output ) {
-		$this->output = $output;
-	}
-
-	protected function setCustomBuckets() {
+	public function __construct( $config, Workspace $workspace, DataBuckets $buckets ) {
+		$this->config = $config;
+		$this->workspace = $workspace;
+		$this->buckets = $buckets;
 		$this->customBuckets = new DataBuckets( [
 			'customizations',
 		] );
 		$this->customBuckets->loadFromWorkspace( $this->workspace );
+		$customizations = $this->customBuckets->getBucketData( 'customizations' );
+		if ( !isset( $customizations['is-enabled'] ) || $customizations['is-enabled'] !== true ) {
+			print_r( "No customization enabled\n" );
+			$customizations = [];
+			$customizations['is-enabled'] = false;
+		} else {
+			print_r( "Customizations loaded\n" );
+		}
+		$this->customizations = $customizations;
+	}
+
+	/**
+	 * @param Output $output
+	 */
+	public function setOutput( Output $output ) {
+		$this->output = $output;
 	}
 
 	/**
@@ -97,7 +119,6 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			print_r( "Please use a connection.json!" );
 			return true;
 		}
-		$this->setCustomBuckets();
 		$connection = new SqlConnection( $file );
 		$this->setNames( $connection );
 		// wiki names not sufficiently used
@@ -119,15 +140,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzePages( $connection ) {
-		$customizations = $this->customBuckets->getBucketData( 'customizations' );
-		if ( !isset( $customizations['is-enabled'] ) || $customizations['is-enabled'] !== true ) {
-			print_r( "No customization enabled\n" );
-			$customizations = [];
-			$customizations['is-enabled'] = false;
-		} else {
-			print_r( "Customizations loaded\n" );
-		}
-
+		$customizations = $this->customizations;
 		$wikiIDtoName = $this->wikiNames;
 		$res = $connection->query(
 			"SELECT p.wiki_id, project_id, c.page_id, title, p.parent_id, "
@@ -197,6 +210,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRevisions( $connection ) {
+		$customizations = $this->customizations;
 		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
 		foreach ( array_keys( $wikiPages ) as $page_id ) {
 			$res = $connection->query(
@@ -211,6 +225,11 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			$last_ver = null;
 			foreach ( $res as $row ) {
 				$ver = $row['version'];
+				if ( $customizations['is-enabled'] && $customizations['current-revision-only'] ) {
+					if ( $ver != $wikiPages[$page_id]['version'] ) {
+						continue;
+					}
+				}
 				$rows[$ver] = $row;
 				unset( $rows[$ver]['version'] );
 				$rows[$ver]['parent_rev_id'] = ( $last_ver !== null ) ?
@@ -218,6 +237,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 					: null;
 				$last_ver = $ver;
 				$rows[$ver]['author_name'] = $this->getUserName( $row['author_id'] );
+				$rows[$ver]['comments'] = '';
 				$this->scanData( $rows[$ver]['data'] );
 				if (
 					is_array( $wikiPages[$page_id]['categories'] )
@@ -241,11 +261,9 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	 * @return void
 	 */
 	protected function scanData( $data ) {
-		preg_match_all( '/{{include_diagram\((\d+).*?--/s', $data, $matches );
+		preg_match_all( '/{{include_diagram\((\d+)(?:--.+?)\)}}/', $data, $matches );
 		if ( !empty( $matches[1] ) ) {
-			$this->diagramIds = array_unique( array_merge(
-				$this->diagramIds, array_unique( $matches[1] )
-			) );
+			$this->diagramIds = array_unique( array_merge( $this->diagramIds, $matches[1] ) );
 		}
 	}
 
@@ -255,6 +273,9 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeDiagrams( $connection ) {
+		if ( count( $this->diagramIds ) === 0 ) {
+			return;
+		}
 		$res = $connection->query(
 			"SELECT d.id , d.title, d.current_position, d.project_id, "
 			. "d.author_id, d.updated_at, d.html, d.xml_png FROM diagrams d "
@@ -282,15 +303,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	 * @param SqlConnection $connection
 	 */
 	protected function analyzeRedirects( $connection ) {
-		$customizations = $this->customBuckets->getBucketData( 'customizations' );
-		if ( !isset( $customizations['is-enabled'] ) || $customizations['is-enabled'] !== true ) {
-			print_r( "No customization enabled\n" );
-			$customizations = [];
-			$customizations['is-enabled'] = false;
-		} else {
-			print_r( "Customizations loaded\n" );
-		}
-
+		$customizations = $this->customizations;
 		$wikiIDtoName = $this->wikiNames;
 		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
 		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows loaded by analyzeRedirects\n" );
@@ -470,16 +483,19 @@ class RedmineWikiAnalyzer extends SqlBase implements
 		$wikiPages = $this->buckets->getBucketData( 'wiki-pages' );
 		$pageRevisions = $this->buckets->getBucketData( 'page-revisions' );
 		$rows = [];
-		$commonClause = "SELECT u.attachment_id, u.id AS revision_id, "
+		$res = $connection->query(
+			"SELECT u.attachment_id, u.id AS revision_id, "
 			. "u.version, u.author_id, u.created_on, u.updated_at, "
 			. "u.description, u.filename, u.disk_directory, u.disk_filename, "
+			. "wp.wiki_id, pr.id AS project_id, pr.name AS project_name, "
+			. "pr.identifier AS project_identifier, "
 			. "u.content_type, u.filesize, u.digest, u.container_id "
 			. "FROM attachment_versions u "
-			. "INNER JOIN attachments a ON a.id = u.attachment_id ";
-		$res = $connection->query(
-			$commonClause
-			. "INNER JOIN wiki_pages p ON u.container_id = p.id "
-			. "WHERE u.container_type = 'WikiPage' AND p.wiki_id IN "
+			. "INNER JOIN attachments a ON a.id = u.attachment_id "
+			. "INNER JOIN wiki_pages wp ON u.container_id = wp.id "
+			. "INNER JOIN wikis w ON wp.wiki_id = w.id "
+			. "INNER JOIN projects pr ON w.project_id = pr.id "
+			. "WHERE u.container_type = 'WikiPage' AND wp.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
 		foreach ( $res as $row ) {
@@ -500,15 +516,24 @@ class RedmineWikiAnalyzer extends SqlBase implements
 					) . '_' . $row['filename']
 					: $row['filename'],
 				'quoted_page_id' => $row['container_id'],
+				'wiki_id' => $row['wiki_id'],
+				'project_id' => $row['project_id'],
+				'project_name' => $row['project_name'],
+				'project_identifier' => $row['project_identifier'],
 			];
 		}
 		// when an attachment is no longer quoted in the current version
 		// of a wiki page, its container type will switch to 'WikiContent'
 		$res = $connection->query(
-			$commonClause
+			"SELECT u.attachment_id, u.id AS revision_id, "
+			. "u.version, u.author_id, u.created_on, u.updated_at, "
+			. "u.description, u.filename, u.disk_directory, u.disk_filename, "
+			. "u.content_type, u.filesize, u.digest, u.container_id "
+			. "FROM attachment_versions u "
+			. "INNER JOIN attachments a ON a.id = u.attachment_id "
 			. "INNER JOIN wiki_contents c ON u.container_id = c.id "
-			. "INNER JOIN wiki_pages p ON c.page_id = p.id "
-			. "WHERE u.container_type = 'WikiContent' AND p.wiki_id IN "
+			. "INNER JOIN wiki_pages wp ON c.page_id = wp.id "
+			. "WHERE u.container_type = 'WikiContent' AND wp.wiki_id IN "
 			. "(" . implode( ", ", array_keys( $wikiIDtoName ) ) . "); "
 		);
 		foreach ( $res as $row ) {
@@ -532,7 +557,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			];
 		}
 		// generate a dummy page with a dummy revision for each attachment
-		// the only important thing is the title
+		// the most important thing is the title
 		$wikiPages = [];
 		foreach ( array_keys( $rows ) as $id ) {
 			// store attachment versions elsewhere to generate batch script
@@ -547,8 +572,10 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				->build();
 			$dummyId = $id + 1000000000;
 			$wikiPages[$dummyId] = [
-				'wiki_id' => 0,
-				'project_id' => 0,
+				'wiki_id' => $file['wiki_id'] ?? 0,
+				'project_id' => $file['project_id'] ?? 0,
+				'project_name' => $file['project_name'] ?? null,
+				'project_identifier' => $file['project_identifier'] ?? null,
 				'title' => $file['filename'],
 				'parent_id' => null,
 				'content_id' => $dummyId,

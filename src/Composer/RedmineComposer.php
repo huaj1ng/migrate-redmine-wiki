@@ -43,7 +43,8 @@ class RedmineComposer extends SimpleHandler {
 				$this->addTextElTo( $revEl, 'model', 'wikitext' );
 				$this->addTextElTo( $revEl, 'format', 'text/x-wiki' );
 				$contributorEl = $this->dom->createElement( 'contributor' );
-				$this->addTextElTo( $contributorEl, 'username', $revision['author_name'] );
+				$username = ucfirst( strtolower( $revision['author_name'] ) );
+				$this->addTextElTo( $contributorEl, 'username', $username );
 				$this->addTextElTo( $contributorEl, 'id', $revision['author_id'] );
 				$revEl->appendChild( $contributorEl );
 				$this->addTextElTo( $revEl, 'text', $revisionWikitext[$id][$version] );
