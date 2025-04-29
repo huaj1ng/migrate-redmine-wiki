@@ -222,14 +222,14 @@ class RedmineConverter extends SimpleHandler {
 			}, $content );
 		$content = preg_replace_callback( '/<code>(.*?)<\/code>/s',
 			function ( $matches ) use ( &$blocks, &$blockCount ) {
-			$placeholder = "##CODE_BLOCK_{$blockCount}##";
-			$blocks[$blockCount] = [
-				'type' => 'code',
-				'content' => $this->toolbox->replaceEncodedEntities( $matches[1] ),
-			];
-			$blockCount++;
-			return $placeholder;
-		}, $content );
+				$placeholder = "##CODE_BLOCK_{$blockCount}##";
+				$blocks[$blockCount] = [
+					'type' => 'code',
+					'content' => $this->toolbox->replaceEncodedEntities( $matches[1] ),
+				];
+				$blockCount++;
+				return $placeholder;
+			}, $content );
 
 		// Process the content outside code blocks
 		$content = $this->postprocess( $content );
