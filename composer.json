@@ -19,6 +19,7 @@
 		"url": "https://packages.bluespice.com/"
 	}],
 	"require": {
+		"symfony/string": "6.4.15",
 		"psr/log": "~3",
 		"hallowelt/mediawiki-lib-mediawikixml": "dev-UpdateDependencies",
 		"hallowelt/mediawiki-lib-commandline-tools": "dev-UpdateDependencies",

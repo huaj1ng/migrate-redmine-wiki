@@ -237,8 +237,7 @@ class ConvertToolbox {
 		if ( !isset( $customizations['redmine-domain'] ) ) {
 			return false;
 		}
-		$domain = rtrim( $customizations['redmine-domain'], '/' );
-		$domain = preg_quote( $domain, '/' );
+		$domain = $customizations['redmine-domain'];
 		return $domain;
 	}
 
@@ -266,6 +265,24 @@ class ConvertToolbox {
 			$line = preg_replace( '/\":<\//', '":' . "\n" . '</', $line );
 		}
 		return implode( "\n", $lines );
+	}
+
+	/**
+	 * A workaround resolving problematic usage of first headings
+	 *
+	 * @param string $content
+	 * @return string
+	 */
+	public function replaceFirstLinesAfterPandoc( $content ) {
+		$lines = explode( "\n", $content, 3 );
+		if ( preg_match( '/^=+\s+.+\s+=+$/', $lines[0] ) ) {
+			$lines[0] = '<!--' . $lines[0] . '-->';
+			$content = implode( "\n", $lines );
+		} elseif ( !empty( $lines[1] ) && preg_match( '/^=+\s+.+\s+=+$/', $lines[1] ) ) {
+			$lines[1] = '<!--' . $lines[1] . '-->';
+			$content = implode( "\n", $lines );
+		}
+		return $content;
 	}
 
 	/**
@@ -301,7 +318,7 @@ class ConvertToolbox {
 	 */
 	public function convertCodeBlocks( $content ) {
 		$content = $this->replaceEncodedEntities( $content );
-		$codeSpanPattern = '/<span\s+class="[a-z0-9]+">(.*?)<\/span>/i';
+		$codeSpanPattern = '/<span\s+class="[a-z0-9]+">([\s\S]*?)<\/span>/i';
 		$content = preg_replace_callback( $codeSpanPattern, static function ( $matches ) {
 			return $matches[1];
 		}, $content );
@@ -350,6 +367,33 @@ class ConvertToolbox {
 	}
 
 	/**
+	 * @param string $content
+	 * @return string
+	 */
+	public function replaceCollapsedBlocks( $content ) {
+		// Pre-handle headings inside collapse blocks
+		$pattern = '/===\s*{{collapse\((.*?)\)\s*===/';
+		$replacement = '{{collapse(=== $1 ===)';
+		$content = preg_replace( $pattern, $replacement, $content );
+		// Handle collapse blocks with title
+		$pattern = '/{{collapse\((.*?)\)([\s\S]*?)(?<!\})\}\}(?!\})/s';
+		$replacement = '<div class="toccolours mw-collapsible mw-collapsed">'
+			. "\n$1\n"
+			. '<div class="mw-collapsible-content">'
+			. "\n$2\n"
+			. '</div></div>';
+		$content = preg_replace( $pattern, $replacement, $content );
+		// Handle collapse blocks without title
+		$pattern = '/{{collapse([\s\S]*?)(?<!\})\}\}(?!\})/s';
+		$replacement = '<div class="toccolours mw-collapsible mw-collapsed">'
+			. '<div class="mw-collapsible-content">'
+			. "\n$1\n"
+			. '</div></div>';
+		$content = preg_replace( $pattern, $replacement, $content );
+		return $content;
+	}
+
+	/**
 	 * @param string $oldStart
 	 * @param string $oldEnd
 	 * @param string $newStart
@@ -381,6 +425,26 @@ class ConvertToolbox {
 	}
 
 	/**
+	 * @param string $content
+	 * @return string
+	 */
+	public function replaceInlineElements( $content ) {
+		$lines = explode( "\n", $content );
+		foreach ( $lines as $index => $line ) {
+			// handle redundant <span> tags
+			if ( preg_match( '/<span\s+id="[^"]*"><\/span>/', $line, $matches ) ) {
+				unset( $lines[$index] );
+			}
+			// handle toc
+			if ( preg_match( '/{{\s*(?:toc|>toc)\s*}}/', $line ) ) {
+				$lines[$index] = str_replace( '{{toc}}', '__TOC__', $line );
+				$lines[$index] = str_replace( '{{>toc}}', '__TOC__', $lines[$index] );
+			}
+		}
+		return implode( "\n", $lines );
+	}
+
+	/**
 	 * @param string $title
 	 * @return string
 	 */
@@ -404,7 +468,7 @@ class ConvertToolbox {
 		if ( isset( $this->customizations['title-cheatsheet'][$title] ) ) {
 			return $this->customizations['title-cheatsheet'][$title];
 		}
-		$this->dataBuckets->addData( 'missing-titles', $title, true, true );
+		$this->dataBuckets->addData( 'missing-titles', $title, true, false );
 		return $title;
 	}
 
@@ -421,21 +485,72 @@ class ConvertToolbox {
 	}
 
 	/**
+	 * Extracts correct attachment according to absolute URL before migration
+	 *
+	 * Redmine attachment urls can extract two different IDs:
+	 * For cases without `version=true`, ATTACHMENT ID is indexed
+	 * For cases with `version=true`, REVISION ID is indexed
 	 * @param string $link
 	 * @return string|false
 	 */
 	public function getAttachmentTitleFromLink( $link ) {
-		$domain = $this->toolbox->getDomain();
+		$domain = $this->getDomain();
 		if ( !$domain ) {
 			return false;
 		}
-		$pattern = '/https?:\/\/' . $domain . '\/attachments\/(?:download|thumbnail)\/';
-		$pattern .= '(\d+)(?:\/[^?#\s]*)?(?:\?[^#\s]*)?(?:#[^\s]*)?/';
-		if ( preg_match( $pattern, $link, $matches ) ) {
-			$id = (int)$matches[1];
-			$title = $this->getFormattedTitleFromId( $id + 1000000000 ) ?? "Attachment-$id";
-			$this->dataBuckets->addData( 'missing-attachments', $link, true, true );
-			return $title;
+		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
+		$pattern = '/https?:\/\/' . preg_quote( $domain, '/' ) . '\/attachments\/';
+		$pattern .= '(?:(?:download|thumbnail)\/)?';
+		$pattern .= '(\d+)';
+		$pattern .= '(?:[^?\s]*)?';
+		$pattern .= '(?:\?([^#\s]*))?/';
+		if ( !preg_match( $pattern, $link, $matches ) ) {
+			return false;
+		}
+		$id = (int)$matches[1];
+		$queryString = isset( $matches[2] ) ? $matches[2] : '';
+		$isVersionSpecific = strpos( $queryString, 'version=true' ) !== false;
+		if ( $isVersionSpecific ) {
+			foreach ( $wikiPages as $page ) {
+				if (
+					isset( $page['attachment_revision_id'] )
+					&& $page['attachment_revision_id'] == $id
+				) {
+					return $page['formatted_title'];
+				}
+			}
+			$this->dataBuckets->addData( 'missing-attachments', $link, true, false );
+			return "Attachment-Revision-$id";
+		} else {
+			$indexId = $id + 1000000000;
+			if ( isset( $wikiPages[$indexId] ) ) {
+				return $wikiPages[$indexId]['formatted_title'];
+			}
+			$this->dataBuckets->addData( 'missing-attachments', $link, true, false );
+			return "Attachment-$id";
+		}
+	}
+
+	/**
+	 * @param string $pageTitle
+	 * @param string $targetTitle
+	 * @return bool
+	 */
+	public function isSameTitle( $pageTitle, $targetTitle ) {
+		if ( $pageTitle === $targetTitle ) {
+			return true;
+		}
+		$pageTitle = str_replace( ' ', '_', $pageTitle );
+		$pageTitle = str_replace( '.', '', $pageTitle );
+		$targetTitle = str_replace( '.', '', $targetTitle );
+		$targetTitle = str_replace( ',', '', $targetTitle );
+		$targetTitle = str_replace( '/', '', $targetTitle );
+		$targetTitle = str_replace( '?', '', $targetTitle );
+		$targetTitle = str_replace( '¶', '', $targetTitle );
+		$targetTitle = str_replace( '’', '\'', $targetTitle );
+		$targetTitle = str_replace( '‘', '\'', $targetTitle );
+		if ( strtolower( $pageTitle ) == strtolower( $targetTitle ) ) {
+			return true;
 		}
 		return false;
 	}
