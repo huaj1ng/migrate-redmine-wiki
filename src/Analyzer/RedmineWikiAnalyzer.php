@@ -34,6 +34,12 @@ class RedmineWikiAnalyzer extends SqlBase implements
 	/** @var array */
 	private $diagramIds = [];
 
+	/** @var array */
+	private $wantedAttachmentRevisions = [];
+
+	/** @var array */
+	private $wantedAttachmentIds = [];
+
 	/** @var int */
 	private $maintenanceUserID = 1;
 
@@ -183,9 +189,10 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				$page = $row['parent_id'];
 			}
 			// naming convention: <root_page_title>/<root_page>/<sub_page>/..
-			$rows[$page_id]['formatted_title'] = $builder->invertTitleSegments()->build();
-
-			$fTitle = $rows[$page_id]['formatted_title'];
+			$fTitle = $builder->invertTitleSegments()->build();
+			// handle U+00A0 (non-breaking space) in page titles
+			$fTitle = str_replace( ' ', '_', $fTitle );
+			$rows[$page_id]['formatted_title'] = $fTitle;
 			if ( $customizations['is-enabled'] && isset( $customizations['categories-to-add'][$fTitle] ) ) {
 				$rows[$page_id]['categories'] = array_unique( array_merge(
 					$rows[$page_id]['categories'],
@@ -265,6 +272,28 @@ class RedmineWikiAnalyzer extends SqlBase implements
 		if ( !empty( $matches[1] ) ) {
 			$this->diagramIds = array_unique( array_merge( $this->diagramIds, $matches[1] ) );
 		}
+		$customizations = $this->customizations;
+		if ( $customizations['is-enabled'] && isset( $customizations['redmine-domain'] ) ) {
+			$domain = $customizations['redmine-domain'];
+			$pattern = '/https?:\/\/' . preg_quote( $domain, '/' ) . '\/attachments\/';
+			$pattern .= '(?:(?:download|thumbnail)\/)?';
+			$pattern .= '(\d+)';
+			$pattern .= '([^"\'\s>\xa0]*)/u';
+			preg_match_all( $pattern, $data, $matches, PREG_SET_ORDER );
+			foreach ( $matches as $match ) {
+				if ( !isset( $match[1] ) ) {
+					continue;
+				}
+				$attachmentId = (int)$match[1];
+				$urlSuffix = isset( $match[2] ) ? $match[2] : '';
+				$isVersionSpecific = strpos( $urlSuffix, 'version=true' ) !== false;
+				if ( $isVersionSpecific ) {
+					$this->wantedAttachmentRevisions[] = $attachmentId;
+				} else {
+					$this->wantedAttachmentIds[] = $attachmentId;
+				}
+			}
+		}
 	}
 
 	/**
@@ -287,10 +316,12 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			$targetFilename = "Diagram" . $id . "--" . $row['title'] . '.png';
 			$row['target_filename'] = $targetFilename;
 			$titleBuilder = new TitleBuilder( [] );
-			$row['formatted_title'] = $titleBuilder
+			$fTitle = $titleBuilder
 				->setNamespace( 6 )
 				->appendTitleSegment( $targetFilename )
 				->build();
+			$fTitle = str_replace( ' ', '_', $fTitle );
+			$row['formatted_title'] = $fTitle;
 			$row['data_base64'] = str_replace( 'data:image/png;base64,', '', $row['xml_png'] );
 			unset( $row['xml_png'] );
 			$this->buckets->addData( 'diagram-contents', $id, $row, false, false );
@@ -385,6 +416,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				->appendTitleSegment( $rootPageTitle )
 				->appendTitleSegment( $row['page_title'] )
 				->build();
+			$fTitle = str_replace( ' ', '_', $fTitle );
 			$id = self::INT_MAX - $i;
 			$i++;
 			$wikiPages[$id] = [
@@ -422,6 +454,12 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				. "WHERE wiki_id = " . $note['redir_wiki_id'] . " "
 				. "AND title = '" . $note['redir_page_title'] . "';"
 			);
+			if ( !$res || $res->num_rows === 0 ) {
+				print_r( "Redirect target page not found: " . $note['redir_page_title'] . "\n" );
+				$id = $note['page_id'];
+				unset( $wikiPages[$id] );
+				continue;
+			}
 			foreach ( $res as $row ) {
 				if ( !isset( $wikiPages[$row['redir_page_id']] ) ) {
 					print_r( "Redirect target page not found: " . $note['redir_page_title'] . "\n" );
@@ -441,6 +479,20 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			}
 		}
 		foreach ( array_keys( $wikiPages ) as $id ) {
+			$fTitle = $wikiPages[$id]['formatted_title'];
+			if ( $customizations['is-enabled'] && isset( $customizations['categories-to-add'][$fTitle] ) ) {
+				$wikiPages[$id]['categories'] = array_unique( array_merge(
+					$wikiPages[$id]['categories'],
+					$customizations['categories-to-add'][$fTitle]
+				) );
+			}
+			if ( $customizations['is-enabled'] && isset( $customizations['pages-to-modify'][$fTitle] ) ) {
+				if ( $customizations['pages-to-modify'][$fTitle] === false ) {
+					continue;
+				} else {
+					$wikiPages[$id]['formatted_title'] = $customizations['pages-to-modify'][$fTitle];
+				}
+			}
 			$this->buckets->addData( 'wiki-pages', $id, $wikiPages[$id], false, false );
 		}
 		print_r( "[wiki-pages] " . count( $wikiPages ) . " rows injected by analyzeRedirects\n" );
@@ -503,6 +555,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				? $row['disk_directory'] . DIRECTORY_SEPARATOR
 				: '';
 			$rows[$row['attachment_id']][$row['version']] = [
+				'revision_id' => $row['revision_id'],
 				'created_on' => $row['created_on'],
 				'updated_at' => $row['updated_at'],
 				'summary' => $row['description'],
@@ -541,6 +594,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				? $row['disk_directory'] . DIRECTORY_SEPARATOR
 				: '';
 			$rows[$row['attachment_id']][$row['version']] = [
+				'revision_id' => $row['revision_id'],
 				'created_on' => $row['created_on'],
 				'updated_at' => $row['updated_at'],
 				'summary' => $row['description'],
@@ -556,6 +610,75 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				'quoted_content_id' => $row['container_id'],
 			];
 		}
+		// Include attachments from static links
+		print_r( $this->wantedAttachmentRevisions );
+		if ( count( $this->wantedAttachmentRevisions ) > 0 ) {
+			$wantedAttachments = $this->wantedAttachmentRevisions;
+			$res = $connection->query(
+				"SELECT u.attachment_id, u.id AS revision_id, "
+				. "u.version, u.author_id, u.created_on, u.updated_at, "
+				. "u.description, u.filename, u.disk_directory, u.disk_filename, "
+				. "u.content_type, u.filesize, u.digest, u.container_id "
+				. "FROM attachment_versions u "
+				. "WHERE u.id IN "
+				. "(" . implode( ", ", $wantedAttachments ) . "); "
+			);
+			foreach ( $res as $row ) {
+				$pathPrefix = $row['disk_directory']
+					? $row['disk_directory'] . DIRECTORY_SEPARATOR
+					: '';
+				$rows[$row['attachment_id']][$row['version']] = [
+					'revision_id' => $row['revision_id'],
+					'created_on' => $row['created_on'],
+					'updated_at' => $row['updated_at'],
+					'summary' => $row['description'],
+					'user_id' => $row['author_id'],
+					'filename' => $row['filename'],
+					'source_path' => $pathPrefix . $row['disk_filename'],
+					'target_filename' => isset( $samenameAttachments[$row['filename']] )
+						? implode(
+							'_',
+							$samenameAttachments[$row['filename']][$row['attachment_id']]
+						) . '_' . $row['filename']
+						: $row['filename'],
+					'quoted_content_id' => $row['container_id'],
+				];
+			}
+		}
+		print_r( $this->wantedAttachmentIds );
+		if ( count( $this->wantedAttachmentIds ) > 0 ) {
+			$wantedAttachments = $this->wantedAttachmentIds;
+			$res = $connection->query(
+				"SELECT u.attachment_id, u.id AS revision_id, "
+				. "u.version, u.author_id, u.created_on, u.updated_at, "
+				. "u.description, u.filename, u.disk_directory, u.disk_filename, "
+				. "u.content_type, u.filesize, u.digest, u.container_id "
+				. "FROM attachment_versions u "
+				. "WHERE u.attachment_id IN "
+				. "(" . implode( ", ", $wantedAttachments ) . "); "
+			);
+			foreach ( $res as $row ) {
+				$pathPrefix = $row['disk_directory']
+					? $row['disk_directory'] . DIRECTORY_SEPARATOR
+					: '';
+				$rows[$row['attachment_id']][$row['version']] = [
+					'revision_id' => $row['revision_id'],
+					'created_on' => $row['created_on'],
+					'updated_at' => $row['updated_at'],
+					'summary' => $row['description'],
+					'user_id' => $row['author_id'],
+					'filename' => $row['filename'],
+					'source_path' => $pathPrefix . $row['disk_filename'],
+					'target_filename' => isset( $samenameAttachments[$row['filename']] )
+						? implode(
+							'_',
+							$samenameAttachments[$row['filename']][$row['attachment_id']]
+						) . '_' . $row['filename']
+						: $row['filename'],
+					'quoted_content_id' => $row['container_id'],
+				];
+			}
+		}
 		// generate a dummy page with a dummy revision for each attachment
 		// the most important thing is the title
 		$wikiPages = [];
@@ -570,8 +693,10 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				->setNamespace( 6 )
 				->appendTitleSegment( $file['target_filename'] )
 				->build();
+			$fTitle = str_replace( ' ', '_', $fTitle );
 			$dummyId = $id + 1000000000;
 			$wikiPages[$dummyId] = [
+				'attachment_revision_id' => $file['revision_id'],
 				'wiki_id' => $file['wiki_id'] ?? 0,
 				'project_id' => $file['project_id'] ?? 0,
 				'project_name' => $file['project_name'] ?? null,
@@ -586,7 +711,7 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			];
 			$pageRevision = [
 				1 => [
-					'rev_id' => $dummyId,
+					'rev_id' => $file['revision_id'],
 					'page_id' => $dummyId,
 					'author_name' => $this->getUserName( $file['user_id'] ),
 					'author_id' => $file['user_id'],

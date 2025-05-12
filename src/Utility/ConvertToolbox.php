@@ -318,7 +318,7 @@ class ConvertToolbox {
 	 */
 	public function convertCodeBlocks( $content ) {
 		$content = $this->replaceEncodedEntities( $content );
-		$codeSpanPattern = '/<span\s+class="[a-z0-9]+">(.*?)<\/span>/i';
+		$codeSpanPattern = '/<span\s+class="[a-z0-9]+">([\s\S]*?)<\/span>/i';
 		$content = preg_replace_callback( $codeSpanPattern, static function ( $matches ) {
 			return $matches[1];
 		}, $content );
@@ -485,6 +485,11 @@ class ConvertToolbox {
 	}
 
 	/**
+	 * Extracts correct attachment according to absolute URL before migration
+	 *
+	 * Redmine attachment urls can extract two different IDs:
+	 * For cases without `version=true`, ATTACHMENT ID is indexed
+	 * For cases with `version=true`, REVISION ID is indexed
 	 * @param string $link
 	 * @return string|false
 	 */
@@ -493,16 +498,37 @@ class ConvertToolbox {
 		if ( !$domain ) {
 			return false;
 		}
+		$wikiPages = $this->dataBuckets->getBucketData( 'wiki-pages' );
 		$pattern = '/https?:\/\/' . preg_quote( $domain, '/' ) . '\/attachments\/';
 		$pattern .= '(?:(?:download|thumbnail)\/)?';
-		$pattern .= '(\d+)(?:\/[^?#\s]*)?(?:\?[^#\s]*)?(?:#[^\s]*)?/';
-		if ( preg_match( $pattern, $link, $matches ) ) {
-			$id = (int)$matches[1];
-			$title = $this->getFormattedTitleFromId( $id + 1000000000 ) ?? "Attachment-$id";
-			$this->dataBuckets->addData( 'missing-attachments', $link, true, false );
-			return $title;
+		$pattern .= '(\d+)';
+		$pattern .= '(?:[^?\s]*)?';
+		$pattern .= '(?:\?([^#\s]*))?/';
+		if ( !preg_match( $pattern, $link, $matches ) ) {
+			return false;
 		}
-		return false;
+		$id = (int)$matches[1];
+		$queryString = isset( $matches[2] ) ? $matches[2] : '';
+		$isVersionSpecific = strpos( $queryString, 'version=true' ) !== false;
+		if ( $isVersionSpecific ) {
+			foreach ( $wikiPages as $page ) {
+				if (
+					isset( $page['attachment_revision_id'] )
+					&& $page['attachment_revision_id'] == $id
+				) {
+					return $page['formatted_title'];
+				}
+			}
+			$this->dataBuckets->addData( 'missing-attachments', $link, true, false );
+			return "Attachment-Revision-$id";
+		} else {
+			$indexId = $id + 1000000000;
+			if ( isset( $wikiPages[$indexId] ) ) {
+				return $wikiPages[$indexId]['formatted_title'];
+			}
+			$this->dataBuckets->addData( 'missing-attachments', $link, true, false );
+			return "Attachment-$id";
+		}
 	}
 
 	/**
