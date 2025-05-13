@@ -611,6 +611,9 @@ class RedmineWikiAnalyzer extends SqlBase implements
 			];
 		}
 		// Include attachments from static links
+		$this->wantedAttachmentRevisions = array_values(
+			array_unique( $this->wantedAttachmentRevisions )
+		);
 		print_r( $this->wantedAttachmentRevisions );
 		if ( count( $this->wantedAttachmentRevisions ) > 0 ) {
 			$wantedAttachments = $this->wantedAttachmentRevisions;
@@ -645,6 +648,9 @@ class RedmineWikiAnalyzer extends SqlBase implements
 				];
 			}
 		}
+		$this->wantedAttachmentIds = array_values(
+			array_unique( $this->wantedAttachmentIds )
+		);
 		print_r( $this->wantedAttachmentIds );
 		if ( count( $this->wantedAttachmentIds ) > 0 ) {
 			$wantedAttachments = $this->wantedAttachmentIds;
